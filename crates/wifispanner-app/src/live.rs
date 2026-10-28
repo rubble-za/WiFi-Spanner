@@ -35,7 +35,7 @@ pub fn show(ui: &mut egui::Ui, latest: Option<&ScanResult>) {
                 ui.label(n.security.to_string());
                 match n.signal_dbm {
                     Some(s) => {
-                        ui.colored_label(signal_color(s), format!("{s:.0} dBm"));
+                        ui.colored_label(signal_color(s, ui.visuals().dark_mode), format!("{s:.0} dBm"));
                     }
                     None => {
                         ui.label("-");
@@ -49,11 +49,33 @@ pub fn show(ui: &mut egui::Ui, latest: Option<&ScanResult>) {
     });
 }
 
-pub fn signal_color(dbm: f64) -> egui::Color32 {
-    match dbm {
-        d if d >= -60.0 => egui::Color32::from_rgb(80, 200, 120),
-        d if d >= -70.0 => egui::Color32::from_rgb(230, 200, 60),
-        d if d >= -80.0 => egui::Color32::from_rgb(240, 140, 50),
-        _ => egui::Color32::from_rgb(230, 80, 80),
+/// Signal strength colour, with darker shades on a light background so the
+/// numbers stay readable.
+pub fn signal_color(dbm: f64, dark: bool) -> egui::Color32 {
+    let (good, ok, weak, bad) = if dark {
+        ((80, 200, 120), (230, 200, 60), (240, 140, 50), (230, 80, 80))
+    } else {
+        ((0, 120, 62), (140, 100, 0), (184, 80, 0), (186, 26, 26))
+    };
+    let (r, g, b) = match dbm {
+        d if d >= -60.0 => good,
+        d if d >= -70.0 => ok,
+        d if d >= -80.0 => weak,
+        _ => bad,
+    };
+    egui::Color32::from_rgb(r, g, b)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn signal_colours_differ_by_strength_and_by_theme() {
+        for dark in [true, false] {
+            let all = [-50.0, -65.0, -75.0, -90.0].map(|d| signal_color(d, dark));
+            assert_eq!(all.iter().collect::<std::collections::HashSet<_>>().len(), 4, "four distinct bands (dark={dark})");
+        }
+        assert_ne!(signal_color(-50.0, true), signal_color(-50.0, false));
     }
 }

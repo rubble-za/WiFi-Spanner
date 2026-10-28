@@ -477,7 +477,7 @@ impl FloorTab {
                         ui.label(o.ssid.as_deref().unwrap_or("<hidden>"));
                         ui.label(o.channel.to_string());
                         ui.label(o.band().to_string());
-                        ui.colored_label(signal_color(o.signal_dbm), format!("{:.0}", o.signal_dbm));
+                        ui.colored_label(signal_color(o.signal_dbm, ui.visuals().dark_mode), format!("{:.0}", o.signal_dbm));
                         ui.label(o.samples.to_string());
                         ui.end_row();
                     }

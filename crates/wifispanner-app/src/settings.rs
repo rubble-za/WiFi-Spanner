@@ -7,6 +7,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use wifispanner_core::heatmap::{ColorScheme, RAMP_MAX, RAMP_MIN};
+
+use crate::theme::ThemeMode;
 use wifispanner_scan::iw::{WifiCard, default_card};
 
 /// Selectable scan times in seconds: how long scanning continues before the
@@ -50,6 +52,8 @@ impl MarkerSize {
 #[serde(default)]
 pub struct Settings {
     // General
+    /// Light, dark, or follow the desktop.
+    pub theme_mode: ThemeMode,
     /// Look for a newer release on GitHub when the app starts.
     pub check_updates: bool,
     /// The one-time offer to add a launcher and icon has been shown.
@@ -80,6 +84,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Settings {
+            theme_mode: ThemeMode::System,
             check_updates: true,
             launcher_prompted: false,
             window_size: None,

@@ -69,6 +69,13 @@ pub fn show(
 }
 
 fn general(ui: &mut egui::Ui, s: &mut Settings, launcher: &mut LauncherView) {
+    ui.strong("Appearance");
+    ui.horizontal(|ui| {
+        for mode in crate::theme::ThemeMode::ALL {
+            ui.selectable_value(&mut s.theme_mode, mode, mode.name());
+        }
+    });
+    ui.add_space(14.0);
     ui.checkbox(&mut s.check_updates, "Check for updates when the app starts");
     ui.weak(
         "Asks GitHub whether a newer release exists, which shares your IP address with GitHub. You can also check \

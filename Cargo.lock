@@ -789,6 +789,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 
 [[package]]
+name = "damascene-fonts-roboto"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3349861f3c89e5cd89cf66b07a13b3ee750760a32e2e4943d2283a31c068874"
+
+[[package]]
 name = "digest"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -982,6 +988,15 @@ dependencies = [
  "log",
  "profiling",
  "winit",
+]
+
+[[package]]
+name = "egui_material_icons"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a49b8d9217d02f0344160bff2f04fdc598f3244f65dc04ea7bf6ab74196d419c"
+dependencies = [
+ "egui",
 ]
 
 [[package]]
@@ -2023,6 +2038,17 @@ name = "log"
 version = "0.4.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
+
+[[package]]
+name = "material-colors"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57a5bf6a9d1cf6319a36cebc589b9a681a6b1c699e162f27c020877783579cc7"
+dependencies = [
+ "ahash",
+ "indexmap",
+ "serde",
+]
 
 [[package]]
 name = "memchr"
@@ -4347,9 +4373,12 @@ name = "wifispanner-app"
 version = "0.4.3"
 dependencies = [
  "base64",
+ "damascene-fonts-roboto",
  "eframe",
+ "egui_material_icons",
  "hayro",
  "image",
+ "material-colors",
  "rfd",
  "serde",
  "serde_json",

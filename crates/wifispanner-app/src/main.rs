@@ -12,6 +12,7 @@ mod report;
 mod settings;
 mod settings_ui;
 mod store;
+mod theme;
 mod update;
 
 use std::sync::Arc;
@@ -243,6 +244,7 @@ impl App {
     fn new(ctx: egui::Context) -> Self {
         let ctx_for_logo = ctx.clone();
         let settings = Settings::load();
+        theme::install(&ctx, settings.theme_mode);
         let cards = list_cards().unwrap_or_default();
         let dwell = Arc::new(AtomicU64::new(settings.dwell_secs));
         let (worker, rx) = Worker::spawn(ctx, dwell, settings.active_cards(&cards));
@@ -411,7 +413,10 @@ impl App {
         let Some(info) = self.update_notice.clone() else { return };
         let can_install = info.asset.is_some() && self.appimage.is_some();
         let mut choice = None;
-        egui::Panel::top("update_notice").show(ui, |ui| {
+        let roles = theme::roles(ui.ctx());
+        let banner = egui::Frame::new().fill(roles.primary_container).inner_margin(egui::Margin::symmetric(16, 6));
+        egui::Panel::top("update_notice").frame(banner).show(ui, |ui| {
+            ui.visuals_mut().override_text_color = Some(roles.on_primary_container);
             ui.horizontal(|ui| {
                 ui.label(format!("WiFi Spanner {} is available (you have {}).", info.tag, env!("CARGO_PKG_VERSION")));
                 ui.hyperlink_to(if can_install { "Release notes" } else { "View the release and download" }, &info.url);
@@ -743,6 +748,7 @@ impl App {
             request: None,
         };
         if settings_ui::show(ctx, &mut open, &mut self.settings_section, &mut self.settings, &self.cards, &mut launcher) {
+            theme::set_mode(ctx, self.settings.theme_mode);
             self.apply_settings();
         }
         if let Some(add) = launcher.request {
@@ -809,7 +815,9 @@ impl eframe::App for App {
         self.window_size_tick(ui.ctx());
 
         let mut action: Option<MenuAction> = None;
-        egui::Panel::top("status").show(ui, |ui| {
+        let roles = theme::roles(ui.ctx());
+        let bar_frame = egui::Frame::new().fill(roles.surface_container).inner_margin(egui::Margin::symmetric(12, 4));
+        egui::Panel::top("status").frame(bar_frame).show(ui, |ui| {
             ui.spacing_mut().interact_size.y = BAR_ROW_HEIGHT;
             ui.spacing_mut().button_padding = egui::vec2(14.0, 10.0);
             ui.spacing_mut().item_spacing.x = 12.0;
@@ -831,7 +839,9 @@ impl eframe::App for App {
                     .scope_builder(egui::UiBuilder::new().max_rect(rect).layout(layout), |ui| {
                         let mut tab = self.tab;
                         for (t, name) in [(Tab::Live, "Live analysis"), (Tab::Floor, "Floor plan survey"), (Tab::Projects, "Projects")] {
-                            ui.selectable_value(&mut tab, t, egui::RichText::new(name).size(16.0));
+                            if theme::tab(ui, tab == t, name, BAR_ROW_HEIGHT).clicked() {
+                                tab = t;
+                            }
                         }
                         self.set_tab(tab);
                         ui.min_rect().width()
@@ -874,7 +884,8 @@ impl eframe::App for App {
         self.launcher_prompt_window(ui.ctx());
 
         // Slim status bar at egui's default height, so it only fits its text.
-        egui::Panel::bottom("scan_status").show(ui, |ui| {
+        let status_frame = egui::Frame::new().fill(roles.surface_container).inner_margin(egui::Margin::symmetric(12, 4));
+        egui::Panel::bottom("scan_status").frame(status_frame).show(ui, |ui| {
             ui.horizontal(|ui| {
                 if self.scans_so_far > 0 {
                     ui.label(format!("scanning... {} done", self.scans_so_far));
@@ -933,17 +944,21 @@ enum MenuAction {
     CheckUpdates,
 }
 
-/// Three bars, drawn with the painter so it does not depend on a font glyph.
+/// An icon button with three bars, drawn with the painter, that shows a
+/// Material state layer (a soft circle) on hover and press.
 fn hamburger_button(ui: &mut egui::Ui) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(egui::Vec2::splat(BAR_ROW_HEIGHT - 6.0), egui::Sense::click());
-    let v = ui.style().interact(&resp);
+    let roles = theme::roles(ui.ctx());
     let painter = ui.painter();
-    painter.rect_filled(rect, 8.0, v.bg_fill);
+    if resp.hovered() || resp.is_pointer_button_down_on() {
+        let opacity = if resp.is_pointer_button_down_on() { 0.12 } else { 0.08 };
+        painter.circle_filled(rect.center(), rect.width() / 2.0, roles.on_surface.gamma_multiply(opacity));
+    }
     let (c, half, gap) = (rect.center(), rect.width() * 0.26, rect.height() * 0.17);
     for dy in [-gap, 0.0, gap] {
         painter.line_segment(
             [egui::pos2(c.x - half, c.y + dy), egui::pos2(c.x + half, c.y + dy)],
-            egui::Stroke::new(3.0, v.fg_stroke.color),
+            egui::Stroke::new(2.5, roles.on_surface_variant),
         );
     }
     resp.on_hover_text("Menu")
