@@ -8,7 +8,7 @@ use wifispanner_scan::ScanResult;
 
 pub fn show(ui: &mut egui::Ui, latest: Option<&ScanResult>) {
     let Some(r) = latest else {
-        ui.label("Waiting for first scan...");
+        ui.centered_and_justified(|ui| ui.label(egui::RichText::new("Waiting for first scan...").size(18.0)));
         return;
     };
     let mut nets: Vec<_> = r.networks.iter().collect();
