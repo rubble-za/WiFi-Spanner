@@ -20,6 +20,16 @@ pub fn projects_dir() -> PathBuf {
     base.join("wifispanner").join("projects")
 }
 
+/// `$XDG_CONFIG_HOME/wifispanner`, falling back to `~/.config/wifispanner`.
+pub fn config_dir() -> PathBuf {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        .unwrap_or_else(|| PathBuf::from("."));
+    base.join("wifispanner")
+}
+
 /// A path in the projects folder for a new project, not clashing with an
 /// existing file. The name is reduced to safe filename characters.
 pub fn new_project_path(name: &str) -> std::io::Result<PathBuf> {

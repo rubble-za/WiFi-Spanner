@@ -154,6 +154,20 @@ impl Worker {
     }
 }
 
+/// Where an in-place update stands. Nothing is downloaded until the user
+/// confirms in the dialog.
+enum InstallState {
+    Idle,
+    Confirm(update::UpdateInfo),
+    Working { info: update::UpdateInfo, done: u64 },
+    Failed { info: update::UpdateInfo, message: String },
+}
+
+enum InstallMsg {
+    Progress(u64),
+    Done(Result<(), String>),
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Live,
@@ -180,6 +194,12 @@ struct App {
     update_notice: Option<update::UpdateInfo>,
     /// Result of a manual check: message and an optional release link.
     update_message: Option<(String, Option<String>)>,
+    update_prefs: update::Prefs,
+    /// The AppImage this process runs from, if it is one (enables in-place updates).
+    appimage: Option<std::path::PathBuf>,
+    install: InstallState,
+    install_rx: Option<Receiver<InstallMsg>>,
+    install_cancel: Arc<std::sync::atomic::AtomicBool>,
     settings_section: settings_ui::Section,
     logo: Option<egui::TextureHandle>,
     /// Set while the splash is showing.
@@ -214,6 +234,11 @@ impl App {
             update_rx: None,
             update_notice: None,
             update_message: None,
+            update_prefs: update::Prefs::load(),
+            appimage: update::running_appimage(),
+            install: InstallState::Idle,
+            install_rx: None,
+            install_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             settings_section: settings_ui::Section::default(),
             logo: logo_texture(&ctx_for_logo),
             splash_since: Some(std::time::Instant::now()),
@@ -328,8 +353,11 @@ impl App {
                 if manual {
                     let text = format!("WiFi Spanner {} is available. You have {}.", info.tag, env!("CARGO_PKG_VERSION"));
                     self.update_message = Some((text, Some(info.url.clone())));
+                    self.update_notice = Some(info);
+                } else if self.update_prefs.should_announce(&info.tag, update::unix_now()) {
+                    // The automatic check respects "Dismiss" and "Remind me tomorrow".
+                    self.update_notice = Some(info);
                 }
-                self.update_notice = Some(info);
             }
             Ok(None) if manual => {
                 self.update_message = Some((format!("You have the latest version ({}).", env!("CARGO_PKG_VERSION")), None));
@@ -342,23 +370,158 @@ impl App {
     }
 
     fn update_notice_bar(&mut self, ui: &mut egui::Ui) {
+        enum Choice {
+            Update,
+            Tomorrow,
+            Dismiss,
+        }
         let Some(info) = self.update_notice.clone() else { return };
-        let mut dismiss = false;
+        let can_install = info.asset.is_some() && self.appimage.is_some();
+        let mut choice = None;
         egui::Panel::top("update_notice").show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(format!(
-                    "WiFi Spanner {} is available (you have {}).",
-                    info.tag,
-                    env!("CARGO_PKG_VERSION")
-                ));
-                ui.hyperlink_to("View the release and download", &info.url);
-                if ui.button("Dismiss").clicked() {
-                    dismiss = true;
-                }
+                ui.label(format!("WiFi Spanner {} is available (you have {}).", info.tag, env!("CARGO_PKG_VERSION")));
+                ui.hyperlink_to(if can_install { "Release notes" } else { "View the release and download" }, &info.url);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Dismiss").on_hover_text("Skip this version. You will be told about newer ones.").clicked() {
+                        choice = Some(Choice::Dismiss);
+                    }
+                    if ui.button("Remind me tomorrow").on_hover_text("Hide this for a day, then ask again.").clicked() {
+                        choice = Some(Choice::Tomorrow);
+                    }
+                    if can_install && ui.button("Update now").clicked() {
+                        choice = Some(Choice::Update);
+                    }
+                });
             });
         });
-        if dismiss {
-            self.update_notice = None;
+        match choice {
+            Some(Choice::Update) => self.install = InstallState::Confirm(info),
+            Some(Choice::Tomorrow) => {
+                self.update_prefs.snooze(update::unix_now());
+                self.update_prefs.save();
+                self.update_notice = None;
+            }
+            Some(Choice::Dismiss) => {
+                self.update_prefs.skip(&info.tag);
+                self.update_prefs.save();
+                self.update_notice = None;
+            }
+            None => {}
+        }
+    }
+
+    /// Start the download once the user has confirmed.
+    fn start_install(&mut self, ctx: &egui::Context, info: update::UpdateInfo) {
+        let (Some(asset), Some(target)) = (info.asset.clone(), self.appimage.clone()) else { return };
+        let (tx, rx) = mpsc::channel();
+        self.install_cancel.store(false, Ordering::Relaxed);
+        let (cancel, repaint) = (self.install_cancel.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let result = update::install(&asset, &target, &cancel, |n| {
+                let _ = tx.send(InstallMsg::Progress(n));
+                repaint.request_repaint();
+            });
+            let _ = tx.send(InstallMsg::Done(result));
+            repaint.request_repaint();
+        });
+        self.install_rx = Some(rx);
+        self.install = InstallState::Working { info, done: 0 };
+    }
+
+    fn drain_install(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.install_rx else { return };
+        let mut finished = None;
+        while let Ok(msg) = rx.try_recv() {
+            match msg {
+                InstallMsg::Progress(n) => {
+                    if let InstallState::Working { done, .. } = &mut self.install {
+                        *done = n;
+                    }
+                }
+                InstallMsg::Done(result) => finished = Some(result),
+            }
+        }
+        let Some(result) = finished else { return };
+        self.install_rx = None;
+        let InstallState::Working { info, .. } = std::mem::replace(&mut self.install, InstallState::Idle) else { return };
+        let outcome = result.and_then(|()| match &self.appimage {
+            Some(target) => update::restart(target),
+            None => Err("not running as an AppImage".into()),
+        });
+        match outcome {
+            Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Err(e) if e == "cancelled" => {}
+            Err(message) => self.install = InstallState::Failed { info, message },
+        }
+    }
+
+    fn install_window(&mut self, ctx: &egui::Context) {
+        enum Act {
+            Install(update::UpdateInfo),
+            Cancel,
+            Close,
+        }
+        let mut act = None;
+        let appimage = self.appimage.clone();
+        let (title, body): (&str, Box<dyn FnOnce(&mut egui::Ui, &mut Option<Act>)>) = match &self.install {
+            InstallState::Idle => return,
+            InstallState::Confirm(info) => {
+                let info = info.clone();
+                let size = info.asset.as_ref().map_or(0, |a| a.size) as f64 / 1_048_576.0;
+                let path = appimage.map_or(String::new(), |p| p.display().to_string());
+                ("Install update?", Box::new(move |ui, act| {
+                    ui.label(format!("Install WiFi Spanner {} and restart?", info.tag));
+                    ui.add_space(4.0);
+                    ui.weak(format!(
+                        "This downloads {size:.1} MB from GitHub, checks it against the checksum GitHub publishes for the \
+                         file, then replaces {path} and restarts the app. If anything doesn't check out, nothing is \
+                         replaced. Your projects and settings are not touched."
+                    ));
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Install and restart").clicked() {
+                            *act = Some(Act::Install(info.clone()));
+                        }
+                        if ui.button("Cancel").clicked() {
+                            *act = Some(Act::Close);
+                        }
+                    });
+                }))
+            }
+            InstallState::Working { info, done } => {
+                let total = info.asset.as_ref().map_or(1, |a| a.size.max(1));
+                let (frac, done) = (*done as f32 / total as f32, *done);
+                let tag = info.tag.clone();
+                ("Updating", Box::new(move |ui, act| {
+                    ui.label(format!("Downloading WiFi Spanner {tag}..."));
+                    ui.add(egui::ProgressBar::new(frac).text(format!("{:.1} of {:.1} MB", done as f64 / 1_048_576.0, total as f64 / 1_048_576.0)));
+                    if ui.button("Cancel").clicked() {
+                        *act = Some(Act::Cancel);
+                    }
+                }))
+            }
+            InstallState::Failed { info, message } => {
+                let (url, message) = (info.url.clone(), message.clone());
+                ("Update failed", Box::new(move |ui, act| {
+                    ui.colored_label(egui::Color32::LIGHT_RED, format!("The update was not installed: {message}"));
+                    ui.label("Your current version is unchanged.");
+                    ui.hyperlink_to("Download it from the release page instead", url);
+                    if ui.button("Close").clicked() {
+                        *act = Some(Act::Close);
+                    }
+                }))
+            }
+        };
+        egui::Window::new(title).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO).show(ctx, |ui| {
+            ui.set_max_width(460.0);
+            body(ui, &mut act);
+        });
+        match act {
+            Some(Act::Install(info)) => self.start_install(ctx, info),
+            Some(Act::Cancel) => self.install_cancel.store(true, Ordering::Relaxed),
+            Some(Act::Close) => self.install = InstallState::Idle,
+            None => {}
         }
     }
 
@@ -446,6 +609,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.drain();
         self.drain_update();
+        self.drain_install(ui.ctx());
 
         if let Some(since) = self.splash_since {
             if self.scanner_ready && since.elapsed() >= SPLASH_MIN {
@@ -525,6 +689,7 @@ impl eframe::App for App {
         self.settings_dialog(ui.ctx());
         self.about_window(ui.ctx());
         self.update_message_window(ui.ctx());
+        self.install_window(ui.ctx());
 
         // Slim status bar at egui's default height, so it only fits its text.
         egui::Panel::bottom("scan_status").show(ui, |ui| {
