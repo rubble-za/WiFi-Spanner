@@ -26,9 +26,15 @@ use wifispanner_scan::iw::WifiCard;
 use wifispanner_scan::{ScanResult, Scanner, default_scanner, list_cards};
 
 const LOGO_PNG: &[u8] = include_bytes!("../../../assets/logo.png");
+/// Size of the splash card, drawn in the middle of the (see-through) window.
 const SPLASH_SIZE: [f32; 2] = [560.0, 340.0];
+/// Corner radius of the splash card, in points.
+const SPLASH_RADIUS: f32 = 50.0;
+/// Default size of the main window when none has been saved yet.
 const MAIN_SIZE: [f32; 2] = [1200.0, 760.0];
 /// The splash stays up at least this long so it can be read.
+/// Wait before sizing the window after the splash, and between retries.
+const RESIZE_DELAY: Duration = Duration::from_millis(500);
 const SPLASH_MIN: Duration = Duration::from_millis(1800);
 /// The project page, shown in About as the attribution link.
 const REPO_URL: &str = "https://github.com/rubble-za/WiFi-Spanner";
@@ -38,12 +44,17 @@ const TAGLINE: &str = "Your one-stop WiFi Scanner and Planner";
 const BAR_ROW_HEIGHT: f32 = 48.0;
 
 fn main() -> eframe::Result {
+    // The window opens at its final size, so the desktop places it on screen
+    // (an app cannot position itself on Wayland), and never has to grow later.
+    // Until the scanner is ready it is borderless and see-through apart from
+    // the splash card, and clicks pass through to whatever is behind it.
+    let start = start_size(Settings::load().window_size);
     let options = eframe::NativeOptions {
-        // Starts as a small borderless splash; `App::ui` turns it into the
-        // main window once the scanner is ready.
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size(SPLASH_SIZE)
+            .with_inner_size(start)
             .with_decorations(false)
+            .with_transparent(true)
+            .with_mouse_passthrough(true)
             .with_title("WiFi Spanner")
             .with_app_id("wifispanner")
             .with_icon(window_icon()),
@@ -169,6 +180,20 @@ enum InstallMsg {
     Done(Result<(), String>),
 }
 
+/// Sizing the main window after the splash, then remembering what the user
+/// resizes it to.
+#[derive(Default)]
+struct WindowSizing {
+    /// When to (re)send the size request; `None` once it has taken effect.
+    resize_at: Option<std::time::Instant>,
+    tries: u8,
+    target: egui::Vec2,
+    /// Whether the size is being tracked for saving (after the resize settled).
+    tracking: bool,
+    last_size: egui::Vec2,
+    changed_at: Option<std::time::Instant>,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Live,
@@ -204,6 +229,7 @@ struct App {
     /// Offer to add the desktop launcher (shown once, after the splash).
     launcher_prompt: bool,
     launcher_message: String,
+    window: WindowSizing,
     settings_section: settings_ui::Section,
     logo: Option<egui::TextureHandle>,
     /// Set while the splash is showing.
@@ -245,6 +271,7 @@ impl App {
             install_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             launcher_prompt: false,
             launcher_message: String::new(),
+            window: WindowSizing::default(),
             settings_section: settings_ui::Section::default(),
             logo: logo_texture(&ctx_for_logo),
             splash_since: Some(std::time::Instant::now()),
@@ -553,6 +580,69 @@ impl App {
         }
     }
 
+    /// The size to open at: the last one used, kept within the screen, else
+    /// the default.
+    fn target_window_size(&self, ctx: &egui::Context) -> egui::Vec2 {
+        let screen = ctx.input(|i| i.viewport().monitor_size).unwrap_or(egui::vec2(8000.0, 8000.0));
+        restored_size(self.settings.window_size, screen)
+    }
+
+    /// Resize the window after the splash (retrying until it sticks), then
+    /// save its size a moment after the user stops resizing it.
+    fn window_size_tick(&mut self, ctx: &egui::Context) {
+        let now = std::time::Instant::now();
+        let size = ctx.content_rect().size();
+        if let Some(at) = self.window.resize_at {
+            if now < at {
+                ctx.request_repaint_after(at - now);
+                return;
+            }
+            if self.window.tries > 0 && (size - self.window.target).abs().max_elem() < 4.0 {
+                self.window.resize_at = None;
+                self.window.tracking = true;
+                self.window.last_size = size;
+                return;
+            }
+            if self.window.tries >= 4 {
+                // The desktop would not resize it: leave it where it is.
+                self.window.resize_at = None;
+                self.window.tracking = true;
+                self.window.last_size = size;
+                return;
+            }
+            self.window.target = self.target_window_size(ctx);
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(self.window.target));
+            if self.window.tries == 0 {
+                if let Some(center) = egui::ViewportCommand::center_on_screen(ctx) {
+                    ctx.send_viewport_cmd(center);
+                }
+            }
+            self.window.tries += 1;
+            self.window.resize_at = Some(now + RESIZE_DELAY);
+            ctx.request_repaint_after(RESIZE_DELAY);
+            return;
+        }
+        if !self.window.tracking {
+            return;
+        }
+        if (size - self.window.last_size).length() > 0.5 {
+            self.window.last_size = size;
+            self.window.changed_at = Some(now);
+        }
+        if let Some(t) = self.window.changed_at {
+            if now.duration_since(t) >= Duration::from_secs(1) {
+                self.window.changed_at = None;
+                let new = [size.x.round(), size.y.round()];
+                if self.settings.window_size != Some(new) {
+                    self.settings.window_size = Some(new);
+                    self.settings.save();
+                }
+            } else {
+                ctx.request_repaint_after(Duration::from_secs(1));
+            }
+        }
+    }
+
     /// Add or remove the desktop launcher and icon.
     fn set_launcher(&mut self, add: bool) {
         let result = match (&self.appimage, add) {
@@ -673,6 +763,16 @@ impl App {
 }
 
 impl eframe::App for App {
+    /// Fully clear while the splash is up, so its rounded corners are see-through;
+    /// egui's usual dark clear colour afterwards.
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        if self.splash_since.is_some() {
+            [0.0; 4]
+        } else {
+            egui::Color32::from_rgba_unmultiplied(12, 12, 12, 180).to_normalized_gamma_f32()
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.drain();
         self.drain_update();
@@ -683,10 +783,12 @@ impl eframe::App for App {
                 self.splash_since = None;
                 let ctx = ui.ctx();
                 ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
-                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(MAIN_SIZE[0], MAIN_SIZE[1])));
-                if let Some(center) = egui::ViewportCommand::center_on_screen(ctx) {
-                    ctx.send_viewport_cmd(center);
-                }
+                ctx.send_viewport_cmd(egui::ViewportCommand::Transparent(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(false));
+                // Turning the title bar on takes its height out of the window's
+                // content, so the size is restored a moment later (KDE applies
+                // the decoration change after this frame and would override it).
+                self.window.resize_at = Some(std::time::Instant::now() + RESIZE_DELAY);
                 if self.settings.check_updates {
                     self.start_update_check(ctx, false);
                 }
@@ -703,6 +805,8 @@ impl eframe::App for App {
                 return;
             }
         }
+
+        self.window_size_tick(ui.ctx());
 
         let mut action: Option<MenuAction> = None;
         egui::Panel::top("status").show(ui, |ui| {
@@ -863,19 +967,31 @@ fn window_icon() -> egui::IconData {
 
 fn draw_splash(ui: &mut egui::Ui, logo: Option<&egui::TextureHandle>) {
     egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
-        let rect = ui.max_rect();
+        let window = ui.max_rect();
+        let rect = egui::Rect::from_center_size(
+            window.center(),
+            egui::vec2(SPLASH_SIZE[0].min(window.width()), SPLASH_SIZE[1].min(window.height())),
+        );
         let painter = ui.painter();
+        let corners = [
+            egui::Color32::from_rgb(226, 160, 100), // top left
+            egui::Color32::from_rgb(238, 88, 112),  // top right
+            egui::Color32::from_rgb(40, 150, 212),  // bottom right
+            egui::Color32::from_rgb(122, 72, 200),  // bottom left
+        ];
+        let outline = rounded_rect_points(rect, SPLASH_RADIUS, 18);
+        // A uniformly coloured, anti-aliased polygon underneath smooths the
+        // edge; the gradient mesh is drawn over it.
+        painter.add(egui::Shape::convex_polygon(outline.clone(), mix(corners, 0.5, 0.5), egui::Stroke::NONE));
         let mut mesh = egui::Mesh::default();
-        for (pos, color) in [
-            (rect.left_top(), egui::Color32::from_rgb(226, 160, 100)),
-            (rect.right_top(), egui::Color32::from_rgb(238, 88, 112)),
-            (rect.right_bottom(), egui::Color32::from_rgb(40, 150, 212)),
-            (rect.left_bottom(), egui::Color32::from_rgb(122, 72, 200)),
-        ] {
-            mesh.colored_vertex(pos, color);
+        mesh.colored_vertex(rect.center(), mix(corners, 0.5, 0.5));
+        for p in &outline {
+            mesh.colored_vertex(*p, mix(corners, (p.x - rect.left()) / rect.width(), (p.y - rect.top()) / rect.height()));
         }
-        mesh.add_triangle(0, 1, 2);
-        mesh.add_triangle(0, 2, 3);
+        let n = outline.len() as u32;
+        for i in 0..n {
+            mesh.add_triangle(0, 1 + i, 1 + (i + 1) % n);
+        }
         painter.add(egui::Shape::mesh(mesh));
 
         let c = rect.center();
@@ -897,4 +1013,84 @@ fn draw_splash(ui: &mut egui::Ui, logo: Option<&egui::TextureHandle>) {
             egui::Color32::from_white_alpha(190),
         );
     });
+}
+
+/// The size to open the window at: the saved one within sane limits, else the
+/// default. The screen size is not known yet, so the desktop does the final fitting.
+fn start_size(saved: Option<[f32; 2]>) -> [f32; 2] {
+    match saved {
+        Some([w, h]) => [w.clamp(480.0, 4000.0), h.clamp(320.0, 4000.0)],
+        None => MAIN_SIZE,
+    }
+}
+
+/// The saved window size kept within sane limits and the screen, or the
+/// default when nothing is saved.
+fn restored_size(saved: Option<[f32; 2]>, screen: egui::Vec2) -> egui::Vec2 {
+    match saved {
+        Some([w, h]) => egui::vec2(w.clamp(480.0, screen.x.max(480.0)), h.clamp(320.0, screen.y.max(320.0))),
+        None => egui::vec2(MAIN_SIZE[0], MAIN_SIZE[1]),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rounded_outline_stays_inside_and_cuts_the_corners() {
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(560.0, 340.0));
+        let pts = rounded_rect_points(rect, 150.0, 18);
+        assert_eq!(pts.len(), 4 * 19);
+        assert!(pts.iter().all(|p| rect.expand(0.01).contains(*p)));
+        assert!(!pts.iter().any(|p| p.x < 1.0 && p.y < 1.0), "the top-left corner point is cut away");
+        // The radius is capped at half the shorter side: 150 fits in 340, but 500 does not.
+        let big = rounded_rect_points(rect, 500.0, 18);
+        assert!(big.iter().all(|p| rect.expand(0.01).contains(*p)));
+        assert!(big.iter().any(|p| (p.y - 170.0).abs() < 0.01), "capped radius still reaches the side midpoint");
+    }
+
+    #[test]
+    fn start_size_uses_the_saved_size_within_limits() {
+        assert_eq!(start_size(None), [1200.0, 760.0]);
+        assert_eq!(start_size(Some([1500.0, 900.0])), [1500.0, 900.0]);
+        assert_eq!(start_size(Some([10.0, 99999.0])), [480.0, 4000.0]);
+    }
+
+    #[test]
+    fn window_size_defaults_and_is_kept_on_screen() {
+        let screen = egui::vec2(1920.0, 1080.0);
+        assert_eq!(restored_size(None, screen), egui::vec2(1200.0, 760.0));
+        assert_eq!(restored_size(Some([1400.0, 900.0]), screen), egui::vec2(1400.0, 900.0));
+        assert_eq!(restored_size(Some([5000.0, 4000.0]), screen), screen, "a saved size from a bigger screen is shrunk");
+        assert_eq!(restored_size(Some([10.0, 10.0]), screen), egui::vec2(480.0, 320.0), "a tiny size is raised");
+    }
+}
+
+/// Colour at (u, v) in 0..1 across a rectangle whose corners are, in order,
+/// top left, top right, bottom right, bottom left.
+fn mix(c: [egui::Color32; 4], u: f32, v: f32) -> egui::Color32 {
+    let top = c[0].lerp_to_gamma(c[1], u);
+    let bottom = c[3].lerp_to_gamma(c[2], u);
+    top.lerp_to_gamma(bottom, v)
+}
+
+/// Points around a rounded rectangle, clockwise from the top-left arc. The
+/// radius is limited to half the shorter side; each corner gets `segments` arc steps.
+fn rounded_rect_points(rect: egui::Rect, radius: f32, segments: usize) -> Vec<egui::Pos2> {
+    let r = radius.min(rect.width() / 2.0).min(rect.height() / 2.0).max(0.0);
+    let centres = [
+        (egui::pos2(rect.left() + r, rect.top() + r), 180.0f32),
+        (egui::pos2(rect.right() - r, rect.top() + r), 270.0),
+        (egui::pos2(rect.right() - r, rect.bottom() - r), 0.0),
+        (egui::pos2(rect.left() + r, rect.bottom() - r), 90.0),
+    ];
+    let mut points = Vec::with_capacity(4 * (segments + 1));
+    for (centre, start_deg) in centres {
+        for i in 0..=segments {
+            let a = (start_deg + 90.0 * i as f32 / segments as f32).to_radians();
+            points.push(centre + egui::vec2(a.cos(), a.sin()) * r);
+        }
+    }
+    points
 }

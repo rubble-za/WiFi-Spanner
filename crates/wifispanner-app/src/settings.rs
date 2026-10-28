@@ -54,6 +54,8 @@ pub struct Settings {
     pub check_updates: bool,
     /// The one-time offer to add a launcher and icon has been shown.
     pub launcher_prompted: bool,
+    /// Size of the window when it was last used, restored on the next start.
+    pub window_size: Option<[f32; 2]>,
     // Scanner
     pub dwell_secs: u64,
     /// Primary card; `None` is Auto (the connected card, or the first).
@@ -80,6 +82,7 @@ impl Default for Settings {
         Settings {
             check_updates: true,
             launcher_prompted: false,
+            window_size: None,
             dwell_secs: 3,
             card: None,
             use_all: false,
