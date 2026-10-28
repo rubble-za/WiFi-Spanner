@@ -617,10 +617,7 @@ impl App {
                     if let Some(logo) = &self.logo {
                         ui.add(egui::Image::new(logo).fit_to_exact_size(egui::Vec2::splat(96.0)));
                     }
-                    if let Some(logo) = &self.logo {
-                    ui.add(egui::Image::new(logo).fit_to_exact_size(egui::Vec2::splat(BAR_ROW_HEIGHT - 14.0)));
-                }
-                ui.label(egui::RichText::new("WiFi Spanner").heading());
+                    ui.label(egui::RichText::new("WiFi Spanner").heading());
                     ui.label(TAGLINE);
                     ui.weak(format!("Version {}", env!("CARGO_PKG_VERSION")));
                     ui.add_space(6.0);
@@ -714,6 +711,9 @@ impl eframe::App for App {
             ui.spacing_mut().item_spacing.x = 12.0;
             ui.horizontal(|ui| {
                 let row = ui.available_rect_before_wrap();
+                if let Some(logo) = &self.logo {
+                    ui.add(egui::Image::new(logo).fit_to_exact_size(egui::Vec2::splat(BAR_ROW_HEIGHT - 14.0)));
+                }
                 ui.label(egui::RichText::new("WiFi Spanner").heading());
                 // Tabs are centred on the bar; their width comes from the last
                 // frame, as it is only known after they are laid out.
