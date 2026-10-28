@@ -1,0 +1,22 @@
+[package]
+name = "wifispanner-app"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "wifispanner"
+path = "src/main.rs"
+
+[dependencies]
+eframe = "0.37"
+wifispanner-scan = { path = "../wifispanner-scan" }
+wifispanner-core = { path = "../wifispanner-core" }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
+rfd = "0.17.2"
+hayro = { version = "0.8.0", features = ["embed-fonts"] }
+base64 = "0.23.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+ureq = "3.5.0"

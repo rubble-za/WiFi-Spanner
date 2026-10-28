@@ -1,0 +1,45 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcb1-dev libgl1-mesa-dev libegl1-mesa-dev
+      - run: cargo test --workspace
+
+  appimage:
+    needs: test
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcb1-dev libgl1-mesa-dev libegl1-mesa-dev imagemagick
+      - name: Build
+        run: cargo build --release -p wifispanner-app -p wifispanner-spike
+      - name: Package AppImage
+        run: packaging/build-appimage.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WiFiSpanner-x86_64.AppImage
+          path: dist/WiFiSpanner-x86_64.AppImage
+          if-no-files-found: error

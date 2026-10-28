@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=WiFi Spanner
+Comment=Wi-Fi site survey and planning
+Exec=wifispanner
+Icon=wifispanner
+Categories=Network;Utility;
+Terminal=false
+StartupWMClass=wifispanner

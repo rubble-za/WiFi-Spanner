@@ -1,0 +1,19 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/wifispanner-core",
+    "crates/wifispanner-scan",
+    "crates/wifispanner-spike",
+    "crates/wifispanner-app",
+]
+
+[workspace.package]
+version = "0.3.0"
+edition = "2024"
+publish = false
+license = "GPL-3.0-or-later"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

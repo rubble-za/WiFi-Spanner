@@ -1,0 +1,8 @@
+#!/bin/sh
+here="$(dirname "$(readlink -f "$0")")"
+# `AppRun --spike [args]` runs the command-line scanner instead of the GUI.
+if [ "$1" = "--spike" ]; then
+    shift
+    exec "$here/usr/bin/wifispanner-spike" "$@"
+fi
+exec "$here/usr/bin/wifispanner" "$@"

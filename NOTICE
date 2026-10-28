@@ -1,0 +1,50 @@
+WiFi Spanner
+Copyright (C) 2026 rubble-za
+https://github.com/rubble-za/WiFi-Spanner
+
+WiFi Spanner is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. See the file LICENSE.
+
+WiFi Spanner is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+
+ADDITIONAL TERMS UNDER SECTION 7 OF THE GNU GENERAL PUBLIC LICENSE, VERSION 3
+
+These terms supplement the GNU General Public License and apply to WiFi
+Spanner and to every work based on it. They are the kinds of additional terms
+that section 7 of the GPL expressly permits, so they stay with the work and
+cannot be stripped as "further restrictions".
+
+1. Attribution (GPL section 7(b)).
+   Anyone who conveys WiFi Spanner, or a work based on it, in source or binary
+   form must preserve the copyright notice above and this file. A work based
+   on WiFi Spanner that has an interactive user interface must show, in its
+   About dialog or an equivalent notice, the sentence
+
+       Based on WiFi Spanner by rubble-za
+
+   together with a link to https://github.com/rubble-za/WiFi-Spanner, in
+   addition to its own notices.
+
+2. Modified versions (GPL section 7(c)).
+   Modified versions must be marked in reasonable ways as different from the
+   original version. They must carry a different name and must not be
+   presented as, or mistaken for, the original WiFi Spanner.
+
+3. Name and logo (GPL section 7(e)).
+   No rights are granted under trademark law to use the name "WiFi Spanner" or
+   the logo (assets/logo.png) as the name or logo of a modified version. The
+   logo file itself is distributed under the same GPL terms as the rest of the
+   work. The name and logo may be used to identify the original, unmodified
+   WiFi Spanner, and to say that a work is based on it as described in term 1.
+
+
+THIRD-PARTY SOFTWARE
+
+WiFi Spanner includes open-source libraries, fonts and data files under their
+own licences. They are listed with their licence texts in
+THIRD-PARTY-LICENSES.txt, which must be kept with binary distributions.

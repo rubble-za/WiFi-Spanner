@@ -1,0 +1,195 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 rubble-za. See the LICENSE and NOTICE files.
+
+//! Interpolating survey measurements into a heatmap grid.
+
+/// Signal range of the colour ramp, in dBm.
+pub const RAMP_MIN: f64 = -90.0;
+pub const RAMP_MAX: f64 = -45.0;
+
+/// A measured value at a floor plan position (pixels).
+#[derive(Debug, Clone, Copy)]
+pub struct Sample {
+    pub x: f32,
+    pub y: f32,
+    pub dbm: f64,
+}
+
+/// Row-major grid covering the whole floor plan.
+#[derive(Debug, Clone)]
+pub struct Grid {
+    pub w: usize,
+    pub h: usize,
+    /// Interpolated signal per cell.
+    pub dbm: Vec<f32>,
+    /// 1 near a sample, fading to 0 at the fade distance. Cells with low
+    /// confidence are extrapolation, so they are drawn faintly.
+    pub confidence: Vec<f32>,
+    /// Width and height of one cell in floor plan pixels.
+    pub step_px: f32,
+}
+
+/// Inverse-distance-weighted interpolation (power 2) over a grid of at most
+/// `max_cells` along the longer side. `fade_px` is the distance from the
+/// nearest sample at which confidence reaches zero (it is full up to half).
+pub fn interpolate(samples: &[Sample], img_w: u32, img_h: u32, max_cells: usize, fade_px: f32) -> Grid {
+    let longest = img_w.max(img_h).max(1) as f32;
+    let step = (longest / max_cells as f32).max(1.0);
+    let (w, h) = (((img_w as f32 / step).ceil() as usize).max(1), ((img_h as f32 / step).ceil() as usize).max(1));
+    let mut dbm = vec![crate::survey::MISSING_DBM as f32; w * h];
+    let mut confidence = vec![0.0; w * h];
+    if samples.is_empty() {
+        return Grid { w, h, dbm, confidence, step_px: step };
+    }
+    let fade_px = fade_px.max(1.0);
+    for gy in 0..h {
+        for gx in 0..w {
+            let (px, py) = ((gx as f32 + 0.5) * step, (gy as f32 + 0.5) * step);
+            let (mut num, mut den, mut nearest) = (0.0f64, 0.0f64, f32::MAX);
+            for s in samples {
+                let d2 = (s.x - px).powi(2) + (s.y - py).powi(2);
+                nearest = nearest.min(d2);
+                let wgt = 1.0 / (d2 as f64 + 1.0);
+                num += wgt * s.dbm;
+                den += wgt;
+            }
+            let i = gy * w + gx;
+            dbm[i] = (num / den) as f32;
+            let d = nearest.sqrt();
+            confidence[i] = (1.0 - (d - fade_px * 0.5) / (fade_px * 0.5)).clamp(0.0, 1.0);
+        }
+    }
+    Grid { w, h, dbm, confidence, step_px: step }
+}
+
+/// Thresholds for rating coverage, in dBm. Roughly: enough for reliable
+/// video and voice, enough for browsing, and below that.
+pub const GOOD_DBM: f64 = -67.0;
+pub const FAIR_DBM: f64 = -75.0;
+/// Cells at least this confident count as measured area.
+const MEASURED_CONFIDENCE: f32 = 0.5;
+
+/// Share of the surveyed area in each coverage class.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Coverage {
+    /// Cells close enough to a sample to count as surveyed.
+    pub measured_cells: usize,
+    pub good_pct: f32,
+    pub fair_pct: f32,
+    pub poor_pct: f32,
+}
+
+pub fn coverage(grid: &Grid) -> Coverage {
+    let (mut good, mut fair, mut poor) = (0usize, 0usize, 0usize);
+    for (&d, &c) in grid.dbm.iter().zip(&grid.confidence) {
+        if c < MEASURED_CONFIDENCE {
+            continue;
+        }
+        match d as f64 {
+            d if d >= GOOD_DBM => good += 1,
+            d if d >= FAIR_DBM => fair += 1,
+            _ => poor += 1,
+        }
+    }
+    let n = good + fair + poor;
+    let pct = |x: usize| if n == 0 { 0.0 } else { x as f32 * 100.0 / n as f32 };
+    Coverage { measured_cells: n, good_pct: pct(good), fair_pct: pct(fair), poor_pct: pct(poor) }
+}
+
+/// Colour ramps for heatmaps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum ColorScheme {
+    /// Red (weak) through amber and yellow to green (strong).
+    #[default]
+    Classic,
+    /// Blue (weak) through cyan, green and yellow to red (strong).
+    Rainbow,
+    /// Blue (weak) to red (strong).
+    CoolWarm,
+}
+
+impl ColorScheme {
+    pub const ALL: [ColorScheme; 3] = [ColorScheme::Classic, ColorScheme::Rainbow, ColorScheme::CoolWarm];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            ColorScheme::Classic => "Red to green",
+            ColorScheme::Rainbow => "Blue to red",
+            ColorScheme::CoolWarm => "Cool to warm",
+        }
+    }
+
+    fn stops(self) -> &'static [[f64; 3]] {
+        match self {
+            ColorScheme::Classic => &[[200.0, 45.0, 50.0], [240.0, 140.0, 50.0], [235.0, 205.0, 60.0], [140.0, 205.0, 90.0], [40.0, 170.0, 110.0]],
+            ColorScheme::Rainbow => &[[50.0, 70.0, 220.0], [40.0, 190.0, 220.0], [60.0, 190.0, 90.0], [240.0, 220.0, 60.0], [225.0, 50.0, 45.0]],
+            ColorScheme::CoolWarm => &[[60.0, 90.0, 220.0], [140.0, 150.0, 225.0], [225.0, 225.0, 225.0], [240.0, 150.0, 120.0], [200.0, 50.0, 60.0]],
+        }
+    }
+}
+
+/// Colour for a signal level on a scheme whose ramp spans `min_dbm` to
+/// `max_dbm`; levels outside are clamped to the ends.
+pub fn color_in(scheme: ColorScheme, dbm: f64, min_dbm: f64, max_dbm: f64) -> [u8; 3] {
+    let stops = scheme.stops();
+    let t = ((dbm - min_dbm) / (max_dbm - min_dbm).max(1.0)).clamp(0.0, 1.0) * (stops.len() - 1) as f64;
+    let i = (t.floor() as usize).min(stops.len() - 2);
+    let f = t - i as f64;
+    std::array::from_fn(|c| (stops[i][c] + (stops[i + 1][c] - stops[i][c]) * f).round() as u8)
+}
+
+/// Colour for a signal level with the default scheme and range.
+pub fn color_for(dbm: f64) -> [u8; 3] {
+    color_in(ColorScheme::Classic, dbm, RAMP_MIN, RAMP_MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grid_matches_a_sample_at_its_location() {
+        let g = interpolate(&[Sample { x: 5.0, y: 5.0, dbm: -55.0 }], 10, 10, 10, 8.0);
+        assert!((g.dbm[5 * g.w + 5] + 55.0).abs() < 0.01);
+        assert_eq!(g.confidence[5 * g.w + 5], 1.0);
+    }
+
+    #[test]
+    fn interpolation_stays_between_samples_and_confidence_fades() {
+        let s = [Sample { x: 0.0, y: 50.0, dbm: -50.0 }, Sample { x: 99.0, y: 50.0, dbm: -80.0 }];
+        let g = interpolate(&s, 100, 100, 100, 20.0);
+        let mid = g.dbm[50 * g.w + 50];
+        assert!(mid < -50.0 && mid > -80.0);
+        assert_eq!(g.confidence[50 * g.w + 50], 0.0);
+        assert_eq!(g.confidence[50 * g.w], 1.0);
+    }
+
+    #[test]
+    fn ramp_ends_are_clamped() {
+        assert_eq!(color_for(-200.0), color_for(RAMP_MIN));
+        assert_eq!(color_for(0.0), color_for(RAMP_MAX));
+    }
+
+    #[test]
+    fn coverage_counts_only_measured_cells() {
+        let g = Grid { w: 4, h: 1, dbm: vec![-50.0, -70.0, -90.0, -50.0], confidence: vec![1.0, 1.0, 1.0, 0.0], step_px: 2.0 };
+        let c = coverage(&g);
+        assert_eq!(c.measured_cells, 3);
+        assert!((c.good_pct - 100.0 / 3.0).abs() < 0.01);
+        assert!((c.fair_pct - 100.0 / 3.0).abs() < 0.01);
+        assert!((c.poor_pct - 100.0 / 3.0).abs() < 0.01);
+        let none = coverage(&Grid { w: 1, h: 1, dbm: vec![-50.0], confidence: vec![0.0], step_px: 1.0 });
+        assert_eq!(none.measured_cells, 0);
+    }
+
+    #[test]
+    fn schemes_run_weak_to_strong_and_respect_the_range() {
+        for scheme in ColorScheme::ALL {
+            assert_ne!(color_in(scheme, -90.0, -90.0, -45.0), color_in(scheme, -45.0, -90.0, -45.0));
+            assert_eq!(color_in(scheme, -200.0, -90.0, -45.0), color_in(scheme, -90.0, -90.0, -45.0));
+            // Narrowing the range moves where a level falls on the ramp.
+            assert_ne!(color_in(scheme, -60.0, -90.0, -45.0), color_in(scheme, -60.0, -70.0, -50.0));
+        }
+        assert_eq!(color_for(-60.0), color_in(ColorScheme::Classic, -60.0, RAMP_MIN, RAMP_MAX));
+    }
+}
