@@ -27,8 +27,24 @@ impl Section {
     ];
 }
 
+/// What the General section needs to know about the desktop launcher, and
+/// where it reports the user's request back (true = add, false = remove).
+pub struct LauncherView {
+    pub available: bool,
+    pub installed: bool,
+    pub message: String,
+    pub request: Option<bool>,
+}
+
 /// Show the dialog while `open`. Returns true if any setting changed.
-pub fn show(ctx: &egui::Context, open: &mut bool, section: &mut Section, settings: &mut Settings, cards: &[WifiCard]) -> bool {
+pub fn show(
+    ctx: &egui::Context,
+    open: &mut bool,
+    section: &mut Section,
+    settings: &mut Settings,
+    cards: &[WifiCard],
+    launcher: &mut LauncherView,
+) -> bool {
     let before = settings.clone();
     egui::Window::new("Settings")
         .open(open)
@@ -46,18 +62,39 @@ pub fn show(ctx: &egui::Context, open: &mut bool, section: &mut Section, setting
                 Section::Scanner => scanner(ui, settings, cards),
                 Section::Survey => survey(ui, settings),
                 Section::Heatmap => heatmap_section(ui, settings),
-                Section::General => general(ui, settings),
+                Section::General => general(ui, settings, launcher),
             });
         });
     *settings != before
 }
 
-fn general(ui: &mut egui::Ui, s: &mut Settings) {
+fn general(ui: &mut egui::Ui, s: &mut Settings, launcher: &mut LauncherView) {
     ui.checkbox(&mut s.check_updates, "Check for updates when the app starts");
     ui.weak(
         "Asks GitHub whether a newer release exists, which shares your IP address with GitHub. You can also check \
          any time from the menu: Check for updates.",
     );
+    ui.add_space(14.0);
+    ui.strong("Application menu and icon");
+    if !launcher.available {
+        ui.weak("Available when running the AppImage.");
+    } else if launcher.installed {
+        ui.label("WiFi Spanner is in your application menu.");
+        if ui.button("Remove launcher").clicked() {
+            launcher.request = Some(false);
+        }
+    } else {
+        ui.weak(
+            "Adds a launcher and the WiFi Spanner icon to your home folder, so the app shows its icon in the taskbar \
+             and title bar and can be started from the menu.",
+        );
+        if ui.button("Add launcher").clicked() {
+            launcher.request = Some(true);
+        }
+    }
+    if !launcher.message.is_empty() {
+        ui.weak(&launcher.message);
+    }
 }
 
 fn scanner(ui: &mut egui::Ui, s: &mut Settings, cards: &[WifiCard]) {

@@ -52,6 +52,8 @@ pub struct Settings {
     // General
     /// Look for a newer release on GitHub when the app starts.
     pub check_updates: bool,
+    /// The one-time offer to add a launcher and icon has been shown.
+    pub launcher_prompted: bool,
     // Scanner
     pub dwell_secs: u64,
     /// Primary card; `None` is Auto (the connected card, or the first).
@@ -77,6 +79,7 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             check_updates: true,
+            launcher_prompted: false,
             dwell_secs: 3,
             card: None,
             use_all: false,

@@ -4344,7 +4344,7 @@ dependencies = [
 
 [[package]]
 name = "wifispanner-app"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "base64",
  "eframe",
@@ -4361,7 +4361,7 @@ dependencies = [
 
 [[package]]
 name = "wifispanner-core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "base64",
  "serde",
@@ -4371,14 +4371,14 @@ dependencies = [
 
 [[package]]
 name = "wifispanner-scan"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
 ]
 
 [[package]]
 name = "wifispanner-spike"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "wifispanner-scan",

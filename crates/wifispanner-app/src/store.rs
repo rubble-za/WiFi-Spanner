@@ -9,15 +9,18 @@ use std::time::SystemTime;
 
 pub const EXTENSION: &str = "wifispanner";
 
-/// `$XDG_DATA_HOME/wifispanner/projects`, falling back to
-/// `~/.local/share/wifispanner/projects`.
-pub fn projects_dir() -> PathBuf {
-    let base = std::env::var_os("XDG_DATA_HOME")
+/// `$XDG_DATA_HOME`, falling back to `~/.local/share`.
+pub fn data_home() -> PathBuf {
+    std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join("wifispanner").join("projects")
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// `<data home>/wifispanner/projects`.
+pub fn projects_dir() -> PathBuf {
+    data_home().join("wifispanner").join("projects")
 }
 
 /// `$XDG_CONFIG_HOME/wifispanner`, falling back to `~/.config/wifispanner`.

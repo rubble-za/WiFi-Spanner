@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
 Name=WiFi Spanner
-Comment=Wi-Fi site survey and planning
+Comment=Your one-stop WiFi Scanner and Planner
 Exec=wifispanner
 Icon=wifispanner
 Categories=Network;Utility;

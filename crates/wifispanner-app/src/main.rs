@@ -4,6 +4,7 @@
 //! WiFi Spanner desktop app: a live network analyser and a floor plan survey.
 
 mod floor;
+mod launcher;
 mod live;
 mod pdf;
 mod projects;
@@ -200,6 +201,9 @@ struct App {
     install: InstallState,
     install_rx: Option<Receiver<InstallMsg>>,
     install_cancel: Arc<std::sync::atomic::AtomicBool>,
+    /// Offer to add the desktop launcher (shown once, after the splash).
+    launcher_prompt: bool,
+    launcher_message: String,
     settings_section: settings_ui::Section,
     logo: Option<egui::TextureHandle>,
     /// Set while the splash is showing.
@@ -239,6 +243,8 @@ impl App {
             install: InstallState::Idle,
             install_rx: None,
             install_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            launcher_prompt: false,
+            launcher_message: String::new(),
             settings_section: settings_ui::Section::default(),
             logo: logo_texture(&ctx_for_logo),
             splash_since: Some(std::time::Instant::now()),
@@ -547,6 +553,58 @@ impl App {
         }
     }
 
+    /// Add or remove the desktop launcher and icon.
+    fn set_launcher(&mut self, add: bool) {
+        let result = match (&self.appimage, add) {
+            (Some(app), true) => launcher::install(app),
+            (_, false) => launcher::remove(),
+            (None, true) => Err("not running as an AppImage".into()),
+        };
+        self.launcher_message = match (result, add) {
+            (Ok(()), true) => "Added. Restart WiFi Spanner to see the icon in the title bar.".into(),
+            (Ok(()), false) => "Removed.".into(),
+            (Err(e), _) => format!("Could not change the launcher: {e}"),
+        };
+    }
+
+    /// The one-time offer to add the launcher. Either answer is remembered.
+    fn launcher_prompt_window(&mut self, ctx: &egui::Context) {
+        if !self.launcher_prompt {
+            return;
+        }
+        let mut answer = None;
+        egui::Window::new("Add WiFi Spanner to your application menu?")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.set_max_width(440.0);
+                ui.label(
+                    "This adds a launcher and the WiFi Spanner icon to your home folder (a .desktop file under \
+                     ~/.local/share/applications and an icon under ~/.local/share/icons), so the app shows its icon in \
+                     the taskbar and title bar and can be started from the menu.",
+                );
+                ui.weak("You can remove it any time in Settings > General.");
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Add launcher").clicked() {
+                        answer = Some(true);
+                    }
+                    if ui.button("Not now").clicked() {
+                        answer = Some(false);
+                    }
+                });
+            });
+        if let Some(add) = answer {
+            if add {
+                self.set_launcher(true);
+            }
+            self.launcher_prompt = false;
+            self.settings.launcher_prompted = true;
+            self.settings.save();
+        }
+    }
+
     fn about_window(&mut self, ctx: &egui::Context) {
         let mut open = self.about_open;
         egui::Window::new("About WiFi Spanner")
@@ -559,7 +617,10 @@ impl App {
                     if let Some(logo) = &self.logo {
                         ui.add(egui::Image::new(logo).fit_to_exact_size(egui::Vec2::splat(96.0)));
                     }
-                    ui.label(egui::RichText::new("WiFi Spanner").heading());
+                    if let Some(logo) = &self.logo {
+                    ui.add(egui::Image::new(logo).fit_to_exact_size(egui::Vec2::splat(BAR_ROW_HEIGHT - 14.0)));
+                }
+                ui.label(egui::RichText::new("WiFi Spanner").heading());
                     ui.label(TAGLINE);
                     ui.weak(format!("Version {}", env!("CARGO_PKG_VERSION")));
                     ui.add_space(6.0);
@@ -588,8 +649,17 @@ impl App {
             return;
         }
         let mut open = true;
-        if settings_ui::show(ctx, &mut open, &mut self.settings_section, &mut self.settings, &self.cards) {
+        let mut launcher = settings_ui::LauncherView {
+            available: self.appimage.is_some(),
+            installed: launcher::is_installed(),
+            message: self.launcher_message.clone(),
+            request: None,
+        };
+        if settings_ui::show(ctx, &mut open, &mut self.settings_section, &mut self.settings, &self.cards, &mut launcher) {
             self.apply_settings();
+        }
+        if let Some(add) = launcher.request {
+            self.set_launcher(add);
         }
         self.settings_open = open;
     }
@@ -622,6 +692,13 @@ impl eframe::App for App {
                 }
                 if self.settings.check_updates {
                     self.start_update_check(ctx, false);
+                }
+                if let Some(app) = &self.appimage {
+                    if launcher::is_installed() {
+                        launcher::refresh_if_stale(app);
+                    } else if !self.settings.launcher_prompted {
+                        self.launcher_prompt = true;
+                    }
                 }
             } else {
                 draw_splash(ui, self.logo.as_ref());
@@ -690,6 +767,7 @@ impl eframe::App for App {
         self.about_window(ui.ctx());
         self.update_message_window(ui.ctx());
         self.install_window(ui.ctx());
+        self.launcher_prompt_window(ui.ctx());
 
         // Slim status bar at egui's default height, so it only fits its text.
         egui::Panel::bottom("scan_status").show(ui, |ui| {
