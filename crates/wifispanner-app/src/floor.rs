@@ -399,7 +399,7 @@ impl FloorTab {
         let Some(path) = self.path.clone() else { return };
         self.save_to(&path);
         let Some(project) = &self.project else { return };
-        match report::write_report(&path, project) {
+        match report::write_report(&path, project, &report::ReportStyle::from_settings(&self.view)) {
             Ok(file) => {
                 self.status = format!("Report saved: {}", file.display());
                 if let Err(e) = store::open_externally(&file) {

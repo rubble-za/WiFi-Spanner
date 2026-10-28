@@ -11,10 +11,11 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
-use wifispanner_core::heatmap::{self, FAIR_DBM, GOOD_DBM, Grid, RAMP_MAX, RAMP_MIN, Sample};
+use wifispanner_core::heatmap::{self, ColorScheme, FAIR_DBM, GOOD_DBM, Grid, RAMP_MAX, RAMP_MIN, Sample};
 use wifispanner_core::survey::{Floor, Project, SurveyPoint, Target};
 use wifispanner_scan::Band;
 
+use crate::settings::Settings;
 use crate::store;
 
 const HEAT_CELLS: usize = 256;
@@ -22,11 +23,53 @@ const FADE_M: f32 = 8.0;
 const HEAT_OPACITY: f32 = 0.65;
 const BANDS: [Band; 3] = [Band::Ghz2_4, Band::Ghz5, Band::Ghz6];
 
+/// How a report's heatmaps are drawn: the heatmap settings from the Settings
+/// dialog, so a report matches what is on screen.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ReportStyle {
+    pub scheme: ColorScheme,
+    pub min_dbm: f64,
+    pub max_dbm: f64,
+    /// Readings weaker than this count as not heard.
+    pub detect_dbm: f64,
+}
+
+impl Default for ReportStyle {
+    fn default() -> Self {
+        ReportStyle {
+            scheme: ColorScheme::Classic,
+            min_dbm: RAMP_MIN,
+            max_dbm: RAMP_MAX,
+            detect_dbm: wifispanner_core::survey::MISSING_DBM,
+        }
+    }
+}
+
+impl ReportStyle {
+    pub fn from_settings(s: &Settings) -> Self {
+        ReportStyle { scheme: s.color_scheme, min_dbm: s.min_dbm, max_dbm: s.max_dbm, detect_dbm: s.detect_dbm }
+    }
+
+    /// A sentence saying how to read the colours.
+    fn describe(&self) -> String {
+        let mut text = format!(
+            "Heatmaps use the \"{}\" colours from {:.0} dBm (weakest) to {:.0} dBm (strongest).",
+            self.scheme.name(),
+            self.min_dbm,
+            self.max_dbm
+        );
+        if self.detect_dbm > wifispanner_core::survey::MISSING_DBM {
+            text.push_str(&format!(" Readings weaker than {:.0} dBm are treated as not heard.", self.detect_dbm));
+        }
+        text
+    }
+}
+
 /// Build the report for `project` and write it to the project's reports
 /// folder, returning the file written.
-pub fn write_report(project_path: &Path, project: &Project) -> Result<PathBuf, String> {
+pub fn write_report(project_path: &Path, project: &Project, style: &ReportStyle) -> Result<PathBuf, String> {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    let html = build_html(project, &store::format_unix(now, "+%Y-%m-%d %H:%M"))?;
+    let html = build_html(project, &store::format_unix(now, "+%Y-%m-%d %H:%M"), style)?;
     let dir = store::reports_dir(project_path);
     std::fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
     let path = dir.join(format!("report-{}.html", store::format_unix(now, "+%Y%m%d-%H%M%S")));
@@ -43,12 +86,12 @@ struct View {
 /// The heatmaps worth showing: overall coverage, then each network that was
 /// heard at half or more of the points, each split by band where it has
 /// several. Weaker neighbours stay in the access point table only.
-fn views(floor: &Floor) -> Vec<View> {
+fn views(floor: &Floor, style: &ReportStyle) -> Vec<View> {
     let n = floor.points.len();
     let bands_of = |t: &Target| -> Vec<Band> {
         BANDS
             .into_iter()
-            .filter(|&b| floor.points.iter().any(|p| Floor::signal_at(p, t, Some(b)) > wifispanner_core::survey::MISSING_DBM))
+            .filter(|&b| floor.points.iter().any(|p| Floor::signal_at_min(p, t, Some(b), style.detect_dbm) > wifispanner_core::survey::MISSING_DBM))
             .collect()
     };
     let mut out = Vec::new();
@@ -68,7 +111,11 @@ fn views(floor: &Floor) -> Vec<View> {
     let need = n.div_ceil(2).max(1);
     for ssid in floor.ssids() {
         let t = Target::Ssid(ssid.clone());
-        let heard = floor.points.iter().filter(|p| Floor::signal_at(p, &t, None) > wifispanner_core::survey::MISSING_DBM).count();
+        let heard = floor
+            .points
+            .iter()
+            .filter(|p| Floor::signal_at_min(p, &t, None, style.detect_dbm) > wifispanner_core::survey::MISSING_DBM)
+            .count();
         if heard >= need {
             push(format!("Network \"{ssid}\""), t);
         }
@@ -76,11 +123,11 @@ fn views(floor: &Floor) -> Vec<View> {
     out
 }
 
-fn grid_for(floor: &Floor, view: &View) -> Grid {
+fn grid_for(floor: &Floor, view: &View, style: &ReportStyle) -> Grid {
     let samples: Vec<Sample> = floor
         .points
         .iter()
-        .map(|p| Sample { x: p.x, y: p.y, dbm: Floor::signal_at(p, &view.target, view.band) })
+        .map(|p| Sample { x: p.x, y: p.y, dbm: Floor::signal_at_min(p, &view.target, view.band, style.detect_dbm) })
         .collect();
     let fade_px = match floor.metres_per_px {
         Some(m) => FADE_M / m,
@@ -89,10 +136,10 @@ fn grid_for(floor: &Floor, view: &View) -> Grid {
     heatmap::interpolate(&samples, floor.width_px, floor.height_px, HEAT_CELLS, fade_px)
 }
 
-fn heat_png(grid: &Grid) -> Result<Vec<u8>, String> {
+fn heat_png(grid: &Grid, style: &ReportStyle) -> Result<Vec<u8>, String> {
     let mut img = image::RgbaImage::new(grid.w as u32, grid.h as u32);
     for (i, px) in img.pixels_mut().enumerate() {
-        let [r, g, b] = heatmap::color_for(grid.dbm[i] as f64);
+        let [r, g, b] = heatmap::color_in(style.scheme, grid.dbm[i] as f64, style.min_dbm, style.max_dbm);
         *px = image::Rgba([r, g, b, (grid.confidence[i] * 255.0) as u8]);
     }
     let mut buf = Vec::new();
@@ -127,20 +174,21 @@ fn mime_of(image: &[u8]) -> &'static str {
     if image.starts_with(&[0x89, b'P', b'N', b'G']) { "image/png" } else { "image/jpeg" }
 }
 
-fn legend() -> String {
+fn legend(style: &ReportStyle) -> String {
+    let (min, max) = (style.min_dbm, style.max_dbm);
     let stops = (0..=10)
         .map(|i| {
-            let [r, g, b] = heatmap::color_for(RAMP_MIN + (RAMP_MAX - RAMP_MIN) * i as f64 / 10.0);
+            let [r, g, b] = heatmap::color_in(style.scheme, min + (max - min) * i as f64 / 10.0, min, max);
             format!("rgb({r},{g},{b}) {}%", i * 10)
         })
         .collect::<Vec<_>>()
         .join(",");
     format!(
-        "<div class=\"legend\"><span>{RAMP_MIN:.0} dBm</span><div class=\"bar\" style=\"background:linear-gradient(90deg,{stops})\"></div><span>{RAMP_MAX:.0} dBm or better</span></div>"
+        "<div class=\"legend\"><span>{min:.0} dBm</span><div class=\"bar\" style=\"background:linear-gradient(90deg,{stops})\"></div><span>{max:.0} dBm or better</span></div>"
     )
 }
 
-pub fn build_html(project: &Project, generated: &str) -> Result<String, String> {
+pub fn build_html(project: &Project, generated: &str, style: &ReportStyle) -> Result<String, String> {
     let floor = &project.floor;
     if floor.points.is_empty() {
         return Err("the project has no survey points yet".into());
@@ -178,11 +226,11 @@ pub fn build_html(project: &Project, generated: &str) -> Result<String, String> 
         }
     );
 
-    let views = views(floor);
+    let views = views(floor, style);
     let mut summary = String::from("<table><tr><th>View</th><th>Surveyed area (approx.)</th><th>Good</th><th>Fair</th><th>Poor</th></tr>");
     let mut figures = String::new();
     for (i, v) in views.iter().enumerate() {
-        let grid = grid_for(floor, v);
+        let grid = grid_for(floor, v, style);
         let cov = heatmap::coverage(&grid);
         let _ = write!(
             summary,
@@ -200,7 +248,7 @@ pub fn build_html(project: &Project, generated: &str) -> Result<String, String> 
             figures,
             "<section class=\"fig\" id=\"v{i}\"><h2>{}</h2><svg viewBox=\"0 0 {w} {h}\"><use href=\"#plan\"/><image width=\"{w}\" height=\"{h}\" preserveAspectRatio=\"none\" opacity=\"{HEAT_OPACITY}\" href=\"data:image/png;base64,{}\"/>",
             esc(&v.title),
-            B64.encode(heat_png(&grid)?)
+            B64.encode(heat_png(&grid, style)?)
         );
         for (n, p) in floor.points.iter().enumerate() {
             let _ = write!(
@@ -215,12 +263,16 @@ pub fn build_html(project: &Project, generated: &str) -> Result<String, String> 
                 n + 1
             );
         }
-        let _ = write!(figures, "</svg>{}</section>", legend());
+        let _ = write!(figures, "</svg>{}</section>", legend(style));
     }
     summary.push_str("</table>");
+    if views.is_empty() {
+        summary = "<p class=\"meta\">No network was heard at or above the detection level, so there are no heatmaps.</p>".into();
+    }
     let _ = write!(
         o,
-        "<h2>Coverage summary</h2><p class=\"meta\">Share of the surveyed area by signal: good is {GOOD_DBM:.0} dBm or better, fair is {FAIR_DBM:.0} to {GOOD_DBM:.0}, poor is weaker. Areas far from any survey point are left out.</p>{summary}{figures}"
+        "<h2>Coverage summary</h2><p class=\"meta\">Share of the surveyed area by signal: good is {GOOD_DBM:.0} dBm or better, fair is {FAIR_DBM:.0} to {GOOD_DBM:.0}, poor is weaker. Areas far from any survey point are left out.</p><p class=\"meta\">{}</p>{summary}{figures}",
+        esc(&style.describe())
     );
 
     // Survey points.
@@ -331,7 +383,7 @@ mod tests {
 
     #[test]
     fn report_has_a_heatmap_per_view_and_escapes_untrusted_text() {
-        let html = build_html(&project(vec![point(5.0, "<script>alert(1)</script>", -50.0), point(30.0, "<script>alert(1)</script>", -72.0)]), "now").unwrap();
+        let html = build_html(&project(vec![point(5.0, "<script>alert(1)</script>", -50.0), point(30.0, "<script>alert(1)</script>", -72.0)]), "now", &ReportStyle::default()).unwrap();
         assert!(!html.contains("<script>"));
         assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
         assert!(html.contains("Test &lt;plan&gt;"));
@@ -344,22 +396,60 @@ mod tests {
         let mut far = point(30.0, "Neighbour", -85.0);
         far.observations[0].ssid = Some("Other".into());
         let p = project(vec![point(5.0, "Mine", -50.0), point(6.0, "Mine", -55.0), point(7.0, "Mine", -52.0), far]);
-        let titles: Vec<String> = views(&p.floor).into_iter().map(|v| v.title).collect();
+        let titles: Vec<String> = views(&p.floor, &ReportStyle::default()).into_iter().map(|v| v.title).collect();
         assert!(titles.iter().any(|t| t.contains("\"Mine\"")));
         assert!(!titles.iter().any(|t| t.contains("\"Other\"")));
     }
 
     #[test]
     fn empty_surveys_are_refused() {
-        assert!(build_html(&project(vec![]), "now").is_err());
+        assert!(build_html(&project(vec![]), "now", &ReportStyle::default()).is_err());
     }
 
     #[test]
     fn report_embeds_the_projects_own_floor_plan_bytes() {
         let mut p = project(vec![point(5.0, "Mine", -50.0)]);
         p.floor.image = (0..=255u8).chain(0..=255u8).collect();
-        let html = build_html(&p, "now").unwrap();
+        let html = build_html(&p, "now", &ReportStyle::default()).unwrap();
         assert!(html.contains(&B64.encode(&p.floor.image)));
         assert_eq!(html.matches("id=\"plan\"").count(), 1, "the plan is embedded once and reused");
+    }
+
+    #[test]
+    fn heatmap_settings_change_the_legend_and_are_stated_in_the_report() {
+        let p = project(vec![point(5.0, "Mine", -50.0), point(30.0, "Mine", -60.0)]);
+        let classic = build_html(&p, "now", &ReportStyle::default()).unwrap();
+        let custom = ReportStyle { scheme: ColorScheme::Rainbow, min_dbm: -80.0, max_dbm: -50.0, detect_dbm: -100.0 };
+        let rainbow = build_html(&p, "now", &custom).unwrap();
+        assert!(rainbow.contains(">-80 dBm<") && rainbow.contains(">-50 dBm or better<"), "legend follows the range");
+        assert!(rainbow.contains("Blue to red") && rainbow.contains("from -80 dBm (weakest) to -50 dBm (strongest)"));
+        assert!(classic.contains("Red to green") && !classic.contains("treated as not heard"));
+        assert_ne!(legend(&ReportStyle::default()), legend(&custom), "a different scheme and range give a different ramp");
+        // The heatmap images use the chosen colours too.
+        assert_ne!(
+            heat_png(&heatmap::interpolate(&[Sample { x: 5.0, y: 5.0, dbm: -60.0 }], 40, 20, 8, 20.0), &ReportStyle::default()).unwrap(),
+            heat_png(&heatmap::interpolate(&[Sample { x: 5.0, y: 5.0, dbm: -60.0 }], 40, 20, 8, 20.0), &custom).unwrap()
+        );
+    }
+
+    #[test]
+    fn the_detection_level_drops_weak_readings_from_the_heatmaps() {
+        let p = project(vec![point(5.0, "Faint", -85.0), point(30.0, "Faint", -88.0)]);
+        assert!(!views(&p.floor, &ReportStyle::default()).is_empty());
+        let strict = ReportStyle { detect_dbm: -70.0, ..ReportStyle::default() };
+        assert!(views(&p.floor, &strict).is_empty(), "nothing is strong enough to count");
+        let html = build_html(&p, "now", &strict).unwrap();
+        assert!(html.contains("treated as not heard") && html.contains("No network was heard at or above the detection level"));
+        // The raw data tables still list everything that was seen.
+        assert!(html.contains("Access points seen") && html.contains("-85 dBm"));
+    }
+
+    #[test]
+    fn style_is_taken_from_the_settings() {
+        let s = Settings { color_scheme: ColorScheme::CoolWarm, min_dbm: -90.0, max_dbm: -40.0, detect_dbm: -75.0, ..Default::default() };
+        assert_eq!(
+            ReportStyle::from_settings(&s),
+            ReportStyle { scheme: ColorScheme::CoolWarm, min_dbm: -90.0, max_dbm: -40.0, detect_dbm: -75.0 }
+        );
     }
 }

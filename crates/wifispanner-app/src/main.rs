@@ -31,7 +31,7 @@ const SPLASH_SIZE: [f32; 2] = [560.0, 340.0];
 /// Corner radius of the splash card, in points.
 const SPLASH_RADIUS: f32 = 50.0;
 /// Default size of the main window when none has been saved yet.
-const MAIN_SIZE: [f32; 2] = [1200.0, 760.0];
+const MAIN_SIZE: [f32; 2] = [1200.0, 700.0];
 /// The splash stays up at least this long so it can be read.
 /// Wait before sizing the window after the splash, and between retries.
 const RESIZE_DELAY: Duration = Duration::from_millis(500);
@@ -917,7 +917,7 @@ impl eframe::App for App {
                 self.floor.show(ui, &env);
             }
             Tab::Projects => {
-                if let Some(path) = self.projects.show(ui) {
+                if let Some(path) = self.projects.show(ui, &self.settings) {
                     self.floor.open_project(ui.ctx(), path);
                     self.set_tab(Tab::Floor);
                 }
@@ -1052,7 +1052,7 @@ mod tests {
 
     #[test]
     fn start_size_uses_the_saved_size_within_limits() {
-        assert_eq!(start_size(None), [1200.0, 760.0]);
+        assert_eq!(start_size(None), [1200.0, 700.0]);
         assert_eq!(start_size(Some([1500.0, 900.0])), [1500.0, 900.0]);
         assert_eq!(start_size(Some([10.0, 99999.0])), [480.0, 4000.0]);
     }
@@ -1060,7 +1060,7 @@ mod tests {
     #[test]
     fn window_size_defaults_and_is_kept_on_screen() {
         let screen = egui::vec2(1920.0, 1080.0);
-        assert_eq!(restored_size(None, screen), egui::vec2(1200.0, 760.0));
+        assert_eq!(restored_size(None, screen), egui::vec2(1200.0, 700.0));
         assert_eq!(restored_size(Some([1400.0, 900.0]), screen), egui::vec2(1400.0, 900.0));
         assert_eq!(restored_size(Some([5000.0, 4000.0]), screen), screen, "a saved size from a bigger screen is shrunk");
         assert_eq!(restored_size(Some([10.0, 10.0]), screen), egui::vec2(480.0, 320.0), "a tiny size is raised");

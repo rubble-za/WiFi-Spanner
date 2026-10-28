@@ -10,6 +10,7 @@ use std::time::SystemTime;
 use eframe::egui;
 use wifispanner_core::survey::Project;
 
+use crate::settings::Settings;
 use crate::{report, store};
 
 #[derive(Clone)]
@@ -83,11 +84,11 @@ impl ProjectsTab {
         self.reports_of = None;
     }
 
-    fn generate_report(&mut self, path: &Path) {
+    fn generate_report(&mut self, path: &Path, style: &report::ReportStyle) {
         let project = std::fs::read_to_string(path)
             .map_err(|e| e.to_string())
             .and_then(|t| Project::from_json(&t).map_err(|e| e.to_string()));
-        let result = project.and_then(|p| report::write_report(path, &p));
+        let result = project.and_then(|p| report::write_report(path, &p, style));
         match result {
             Ok(file) => {
                 self.status = format!("Report saved: {}", file.display());
@@ -101,7 +102,7 @@ impl ProjectsTab {
     }
 
     /// Returns a project to open in the floor plan tab, if one was chosen.
-    pub fn show(&mut self, ui: &mut egui::Ui) -> Option<PathBuf> {
+    pub fn show(&mut self, ui: &mut egui::Ui, settings: &Settings) -> Option<PathBuf> {
         let mut open = None;
         egui::Panel::left("projects_list").default_size(440.0).show(ui, |ui| {
             ui.heading("Projects");
@@ -181,7 +182,7 @@ impl ProjectsTab {
                     open = Some(s.path.clone());
                 }
                 if ui.add_enabled(s.points > 0, egui::Button::new("Generate report")).clicked() {
-                    self.generate_report(&s.path);
+                    self.generate_report(&s.path, &report::ReportStyle::from_settings(settings));
                 }
             });
             ui.separator();
