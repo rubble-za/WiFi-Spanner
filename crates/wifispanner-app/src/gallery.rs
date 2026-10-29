@@ -67,6 +67,8 @@ pub struct Gallery {
     reports_of: Option<PathBuf>,
     reports: Vec<store::ReportFile>,
     status: String,
+    /// The dialog choosing what goes into a report, while it is open.
+    report_dialog: Option<report::OptionsDialog>,
     /// The last status shown as a snackbar, to spot changes.
     toasted: String,
 }
@@ -134,11 +136,21 @@ impl Gallery {
         }
     }
 
-    fn generate_report(&mut self, path: &Path, style: &report::ReportStyle) {
+    /// Open the dialog that chooses what the report contains.
+    fn generate_report(&mut self, path: &Path) {
         let project = std::fs::read_to_string(path)
             .map_err(|e| e.to_string())
             .and_then(|t| Project::from_json(&t).map_err(|e| e.to_string()));
-        match project.and_then(|p| report::write_report(path, &p, style)) {
+        match project {
+            Ok(p) if p.floor.points.is_empty() => self.status = "Could not create report: the project has no survey points yet".into(),
+            Ok(p) => self.report_dialog = Some(report::OptionsDialog::new(path.to_path_buf(), p)),
+            Err(e) => self.status = format!("Could not create report: {e}"),
+        }
+    }
+
+    fn write_report(&mut self, dialog: &report::OptionsDialog, style: &report::ReportStyle, opts: &report::ReportOptions) {
+        let path = dialog.path();
+        match report::write_report(path, dialog.project(), style, opts) {
             Ok(file) => {
                 self.status = format!("Report saved: {}", file.display());
                 // Show the folder with the new report highlighted rather than opening it in a browser.
@@ -208,7 +220,7 @@ impl Gallery {
         if let Some((path, choice)) = menu_choice {
             match choice {
                 MenuChoice::Open => action = Some(GalleryAction::Open(path)),
-                MenuChoice::Report => self.generate_report(&path, &report::ReportStyle::from_settings(settings)),
+                MenuChoice::Report => self.generate_report(&path),
                 MenuChoice::Reports => {
                     self.reports = store::reports_for(&path);
                     self.reports_of = Some(path);
@@ -222,11 +234,18 @@ impl Gallery {
                 }
             }
         }
-        self.reports_dialog(ui.ctx(), settings);
+        self.reports_dialog(ui.ctx());
+        if let Some(mut dialog) = self.report_dialog.take() {
+            match dialog.show(ui.ctx()) {
+                report::DialogResult::Open => self.report_dialog = Some(dialog),
+                report::DialogResult::Cancel => {}
+                report::DialogResult::Generate(opts) => self.write_report(&dialog, &report::ReportStyle::from_settings(settings), &opts),
+            }
+        }
         action
     }
 
-    fn reports_dialog(&mut self, ctx: &egui::Context, settings: &Settings) {
+    fn reports_dialog(&mut self, ctx: &egui::Context) {
         let Some(path) = self.reports_of.clone() else { return };
         let name = path.file_stem().map_or(String::new(), |s| s.to_string_lossy().into_owned());
         let can_report = self.loaded.get(&path).is_some_and(|(_, s)| s.points > 0);
@@ -277,7 +296,7 @@ impl Gallery {
             });
         });
         if generate {
-            self.generate_report(&path, &report::ReportStyle::from_settings(settings));
+            self.generate_report(&path);
         }
         if close {
             self.reports_of = None;
@@ -487,6 +506,7 @@ mod tests {
             y: 2.0,
             unix_secs: 1,
             dwell_secs: 3,
+            noise_dbm: None,
             observations: vec![Observation { bssid: "a".into(), ssid: None, freq_mhz: 5180, channel: 36, width_mhz: 80, signal_dbm: -50.0, samples: 1 }],
         };
         let floor = Floor { name: "x".into(), image: png(600, 800), width_px: 600, height_px: 800, metres_per_px: None, points: vec![point] };

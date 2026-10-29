@@ -94,6 +94,7 @@ pub struct FloorTab {
     /// Display settings from the settings dialog, copied in each frame.
     view: Settings,
     pdf_picker: Option<PdfPicker>,
+    report_dialog: Option<report::OptionsDialog>,
 }
 
 /// Thumbnails of a multi-page PDF, shown so the user can pick a page.
@@ -132,6 +133,7 @@ impl Default for FloorTab {
             back: false,
             view: Settings::default(),
             pdf_picker: None,
+            report_dialog: None,
         }
     }
 }
@@ -360,6 +362,7 @@ impl FloorTab {
     pub fn show_dialogs(&mut self, ctx: &egui::Context) {
         self.scale_dialog(ctx);
         self.pdf_dialog(ctx);
+        self.report_dialog(ctx);
     }
 
     /// Ask for a floor plan file (PNG, JPG or PDF) and load it.
@@ -481,6 +484,7 @@ impl FloorTab {
         });
     }
 
+    /// Save the project, then open the dialog that chooses what the report contains.
     fn make_report(&mut self) {
         if self.path.is_none() {
             self.save_as();
@@ -488,15 +492,26 @@ impl FloorTab {
         let Some(path) = self.path.clone() else { return };
         self.save_to(&path);
         let Some(project) = &self.project else { return };
-        match report::write_report(&path, project, &report::ReportStyle::from_settings(&self.view)) {
-            Ok(file) => {
-                self.status = format!("Report saved: {}", file.display());
-                // Show the folder with the new report highlighted rather than opening it in a browser.
-                if let Err(e) = store::reveal(&file) {
-                    self.status.push_str(&format!(" ({e})"));
+        self.report_dialog = Some(report::OptionsDialog::new(path, project.clone()));
+    }
+
+    fn report_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut dialog) = self.report_dialog.take() else { return };
+        match dialog.show(ctx) {
+            report::DialogResult::Open => self.report_dialog = Some(dialog),
+            report::DialogResult::Cancel => {}
+            report::DialogResult::Generate(opts) => {
+                match report::write_report(dialog.path(), dialog.project(), &report::ReportStyle::from_settings(&self.view), &opts) {
+                    Ok(file) => {
+                        self.status = format!("Report saved: {}", file.display());
+                        // Show the folder with the new report highlighted rather than opening it in a browser.
+                        if let Err(e) = store::reveal(&file) {
+                            self.status.push_str(&format!(" ({e})"));
+                        }
+                    }
+                    Err(e) => self.status = format!("Could not create report: {e}"),
                 }
             }
-            Err(e) => self.status = format!("Could not create report: {e}"),
         }
     }
 

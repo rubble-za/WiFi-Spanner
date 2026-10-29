@@ -54,6 +54,10 @@ pub struct SurveyPoint {
     pub y: f32,
     pub unix_secs: u64,
     pub dwell_secs: u64,
+    /// Noise floor measured by the adapter during the dwell, when its driver
+    /// reports one. Older projects and many drivers have none.
+    #[serde(default)]
+    pub noise_dbm: Option<f64>,
     pub observations: Vec<Observation>,
 }
 
@@ -98,8 +102,21 @@ impl SurveyPoint {
                 })
             })
             .collect();
-        SurveyPoint { x, y, unix_secs, dwell_secs, observations }
+        SurveyPoint { x, y, unix_secs, dwell_secs, noise_dbm: scan.noise_dbm, observations }
     }
+}
+
+/// Identifies the physical access point behind a BSSID. One AP radio
+/// broadcasts several SSIDs from BSSIDs that differ only in the last octet
+/// and the locally-administered bit of the first, so those are ignored.
+/// Falls back to the BSSID itself when it is not a MAC address.
+pub fn ap_key(bssid: &str, band: Band) -> String {
+    let parts: Vec<&str> = bssid.split(':').collect();
+    if parts.len() != 6 {
+        return format!("{bssid}/{band}");
+    }
+    let Ok(first) = u8::from_str_radix(parts[0], 16) else { return format!("{bssid}/{band}") };
+    format!("{:02x}:{}:{}:{}:{}/{band}", first & !0x02, parts[1], parts[2], parts[3], parts[4]).to_lowercase()
 }
 
 /// Which APs a heatmap is drawn for.
@@ -180,12 +197,22 @@ mod tests {
             y: 2.0,
             unix_secs: 0,
             dwell_secs: 5,
+            noise_dbm: None,
             observations: vec![
                 obs("a", "Home", 2437, -60.0),
                 obs("b", "Home", 5180, -50.0),
                 obs("c", "Other", 5180, -40.0),
             ],
         }
+    }
+
+    #[test]
+    fn bssids_of_one_radio_share_a_key() {
+        let key = |b: &str| ap_key(b, Band::Ghz5);
+        assert_eq!(key("50:3d:d1:e7:4c:cc"), key("52:3d:d1:e7:4c:ce"), "other SSIDs of the same radio");
+        assert_ne!(key("50:3d:d1:e7:4c:cc"), key("50:3d:d1:e7:4d:cc"));
+        assert_ne!(ap_key("50:3d:d1:e7:4c:cc", Band::Ghz2_4), key("50:3d:d1:e7:4c:cc"), "bands are separate radios");
+        assert_eq!(ap_key("weird", Band::Ghz5), "weird/5 GHz");
     }
 
     #[test]
