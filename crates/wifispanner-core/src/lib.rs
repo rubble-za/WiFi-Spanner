@@ -9,6 +9,7 @@
 pub mod catalog;
 pub mod floors;
 pub mod heatmap;
+pub mod obstacles;
 pub mod predict;
 pub mod survey;
 pub mod walls;

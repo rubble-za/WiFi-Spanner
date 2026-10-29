@@ -141,6 +141,9 @@ pub struct Floor {
     /// Access points placed in the planner.
     #[serde(default)]
     pub aps: Vec<crate::predict::PlannedAp>,
+    /// Areas that absorb signal (shelving, cars, foliage...).
+    #[serde(default)]
+    pub areas: Vec<crate::obstacles::Area>,
 }
 
 fn default_ceiling() -> f32 {
@@ -313,7 +316,7 @@ mod tests {
     }
 
     fn blank(name: &str, mpp: Option<f32>) -> Floor {
-        Floor { name: name.into(), image: vec![], width_px: 100, height_px: 50, metres_per_px: mpp, points: vec![], walls: vec![], ceiling_m: 3.0, placement: Placement::default(), aps: vec![] }
+        Floor { name: name.into(), image: vec![], width_px: 100, height_px: 50, metres_per_px: mpp, points: vec![], walls: vec![], ceiling_m: 3.0, placement: Placement::default(), aps: vec![], areas: vec![] }
     }
 
     #[test]
@@ -414,6 +417,7 @@ mod tests {
             ceiling_m: 4.5,
             placement: Placement::default(),
             aps: vec![],
+            areas: vec![],
         };
         let back = Project::from_json(&Project::new(floor).to_json().unwrap()).unwrap();
         assert_eq!(back.floor().walls.len(), 1);

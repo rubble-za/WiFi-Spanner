@@ -13,13 +13,14 @@ use wifispanner_core::heatmap::{self, Sample};
 use wifispanner_core::survey::{Floor, Project, SurveyPoint, Target, ap_base_key};
 use wifispanner_core::catalog::{self, ApModel};
 use wifispanner_core::predict::{self, PlannedAp, Radio, RadioBand};
+use wifispanner_core::obstacles::{Area, ObstacleKind};
 use wifispanner_core::walls::{self, Wall};
 use wifispanner_core::Material;
 use wifispanner_scan::{Band, ScanResult};
 
 use crate::settings::Settings;
 use crate::theme::{self, ButtonKind};
-use egui_material_icons::icons::{ICON_ADD, ICON_ARCHITECTURE, ICON_ARROW_SELECTOR_TOOL, ICON_CROP_FREE, ICON_EDIT, ICON_PAN_TOOL, ICON_ROUTER, ICON_ARROW_BACK, ICON_OPEN_WITH, ICON_RESTART_ALT, ICON_VISIBILITY, ICON_VISIBILITY_OFF, ICON_DELETE, ICON_DESCRIPTION, ICON_FOLDER_OPEN, ICON_IMAGE, ICON_PLACE, ICON_SAVE, ICON_STRAIGHTEN, ICON_UNDO};
+use egui_material_icons::icons::{ICON_ADD, ICON_ARCHITECTURE, ICON_ARROW_SELECTOR_TOOL, ICON_CATEGORY, ICON_CROP_FREE, ICON_EDIT, ICON_ROUTER, ICON_SMARTPHONE, ICON_ARROW_BACK, ICON_OPEN_WITH, ICON_RESTART_ALT, ICON_VISIBILITY, ICON_VISIBILITY_OFF, ICON_DELETE, ICON_DESCRIPTION, ICON_FOLDER_OPEN, ICON_IMAGE, ICON_PLACE, ICON_SAVE, ICON_STRAIGHTEN, ICON_UNDO};
 use crate::{Cmd, pdf, report, store};
 use crate::live::signal_color;
 
@@ -50,8 +51,10 @@ enum Tool {
     Align,
     /// Place access points (installed ones while surveying, planned ones while planning).
     Aps,
-    /// Move the plan about without changing anything.
-    Pan,
+    /// Draw obstacle areas (shelving, cars, foliage...).
+    Obstacles,
+    /// Drop a simulated client on the plan and see how it would connect.
+    Client,
 }
 
 /// Textures are capped at this size per side; positions stay in plan pixels.
@@ -164,16 +167,72 @@ pub struct FloorTab {
     wall_height: Option<f32>,
     wall_start: Option<Pos2>,
     wall_mode: WallMode,
+    /// Obstacle areas: what the next one is, how it is drawn, and its half-drawn corners.
+    obstacle_kind: ObstacleKind,
+    obstacle_height: Option<f32>,
+    area_mode: AreaMode,
+    area_start: Option<Pos2>,
+    poly_points: Vec<Pos2>,
+    selected_areas: BTreeSet<usize>,
+    /// The simulated client: where it is, which device it is and (for a custom one) its bands.
+    client: Option<Pos2>,
+    client_kind: usize,
+    client_bands: [bool; 3],
     /// Shift is held: no snapping.
     no_snap: bool,
     model_search: String,
     selected_walls: BTreeSet<usize>,
     /// Earlier states of the walls, for undo.
-    wall_history: Vec<Vec<Wall>>,
+    wall_history: Vec<(Vec<Wall>, Vec<Area>)>,
     last_wall_edit: Option<std::time::Instant>,
     /// Plan position where a selection box was started.
     box_start: Option<Pos2>,
     report_dialog: Option<report::OptionsDialog>,
+}
+
+/// How an obstacle area is drawn.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AreaMode {
+    Rectangle,
+    Polygon,
+}
+
+/// Client devices to simulate: name and the bands each can use (2.4, 5, 6 GHz).
+const CLIENTS: [(&str, [bool; 3]); 11] = [
+    ("WiFi 7 Device", [true, true, true]),
+    ("WiFi 7 Phone", [true, true, true]),
+    ("WiFi 6E Device", [true, true, true]),
+    ("WiFi 6E Phone", [true, true, true]),
+    ("WiFi 6 Device", [true, true, false]),
+    ("WiFi 6 Phone", [true, true, false]),
+    ("WiFi 5 Device", [true, true, false]),
+    ("WiFi 5 Phone", [true, true, false]),
+    ("WiFi 4 Device", [true, true, false]),
+    ("WiFi 4 Phone", [true, true, false]),
+    ("Custom Client", [true, true, false]),
+];
+const CUSTOM_CLIENT: usize = 10;
+/// Below this a client cannot keep a connection.
+const NO_COVERAGE_DBM: f32 = -85.0;
+
+fn rating(dbm: f32) -> &'static str {
+    match dbm {
+        d if d >= -55.0 => "excellent",
+        d if d >= -67.0 => "good",
+        d if d >= -75.0 => "fair",
+        d if d >= -82.0 => "weak",
+        _ => "very weak",
+    }
+}
+
+fn rating_colour(dbm: f32) -> Color32 {
+    match dbm {
+        d if d >= -55.0 => Color32::from_rgb(60, 180, 100),
+        d if d >= -67.0 => Color32::from_rgb(140, 190, 70),
+        d if d >= -75.0 => Color32::from_rgb(230, 170, 40),
+        d if d >= -82.0 => Color32::from_rgb(235, 120, 50),
+        _ => Color32::from_rgb(220, 70, 60),
+    }
 }
 
 /// What the wall tool draws.
@@ -221,6 +280,12 @@ enum WallEdit {
     Mode(WallMode),
     Material(Material),
     Height(Option<f32>),
+    AreaMode(AreaMode),
+    AreaKind(ObstacleKind),
+    AreaHeight(Option<f32>),
+    ClientKind(usize),
+    ClientBand(usize, bool),
+    ClientHeight(f32),
     Ceiling(f32),
     Undo,
     Delete,
@@ -287,6 +352,15 @@ impl Default for FloorTab {
             wall_height: Material::Concrete.default_height_m(),
             wall_start: None,
             wall_mode: WallMode::Wall,
+            obstacle_kind: ObstacleKind::ShelfWarehouse,
+            obstacle_height: ObstacleKind::ShelfWarehouse.default_height_m(),
+            area_mode: AreaMode::Rectangle,
+            area_start: None,
+            poly_points: Vec::new(),
+            selected_areas: BTreeSet::new(),
+            client: None,
+            client_kind: 0,
+            client_bands: [true, true, false],
             no_snap: false,
             model_search: String::new(),
             selected_walls: BTreeSet::new(),
@@ -392,7 +466,7 @@ impl FloorTab {
             Ok(d) => d,
             Err(e) => return self.status = format!("Not a usable image: {e}"),
         };
-        let floor = Floor { name, image: bytes, width_px: w, height_px: h, metres_per_px: None, points: Vec::new(), walls: Vec::new(), ceiling_m: wifispanner_core::walls::DEFAULT_CEILING_M, placement: Default::default(), aps: Vec::new() };
+        let floor = Floor { name, image: bytes, width_px: w, height_px: h, metres_per_px: None, points: Vec::new(), walls: Vec::new(), ceiling_m: wifispanner_core::walls::DEFAULT_CEILING_M, placement: Default::default(), aps: Vec::new(), areas: Vec::new() };
         if std::mem::take(&mut self.adding_floor)
             && let Some(p) = self.project.as_mut()
         {
@@ -524,6 +598,8 @@ impl FloorTab {
         self.pending = None;
         self.scale_clicks.clear();
         self.selected_walls.clear();
+        self.selected_areas.clear();
+        self.client = None;
         self.wall_start = None;
         self.wall_history.clear();
         self.aps_selected.clear();
@@ -845,7 +921,11 @@ impl FloorTab {
             return self.plan_row(ui);
         }
         let Some(floor) = self.project.as_ref().map(|p| p.floor()) else { return };
+        let (tool, survey) = (self.tool, self.mode == WorkMode::Survey);
+        let mut picked = None;
         ui.horizontal_wrapped(|ui| {
+            picked = Self::tool_chips(ui, tool, survey, true);
+            ui.separator();
             let mut changed = theme::switch_row(ui, &mut self.show_heat, "Heatmap").changed();
             ui.add_enabled_ui(self.show_heat, |ui| {
                 ui.label("Show");
@@ -881,11 +961,39 @@ impl FloorTab {
                 self.heat_dirty = true;
             }
         });
+        if let Some(t) = picked {
+            self.set_tool(t);
+        }
+    }
+
+    /// The tool chips, drawn at the start of the second toolbar row. Returns the
+    /// tool the user picked, if any.
+    fn tool_chips(ui: &mut egui::Ui, current: Tool, survey: bool, enabled: bool) -> Option<Tool> {
+        let chips = [
+            (Tool::Select, ICON_ARROW_SELECTOR_TOOL, "Select"),
+            (Tool::Survey, ICON_PLACE, if survey { "Survey point" } else { "Survey data" }),
+            (Tool::Walls, ICON_ARCHITECTURE, "Walls"),
+            (Tool::Obstacles, ICON_CATEGORY, "Obstacles"),
+            (Tool::Aps, ICON_ROUTER, "Access points"),
+            (Tool::Client, ICON_SMARTPHONE, "Client"),
+            (Tool::Scale, ICON_STRAIGHTEN, "Set scale"),
+        ];
+        let mut picked = None;
+        for (tool, icon, label) in chips {
+            if enabled && theme::chip(ui, current == tool, Some(icon), label).clicked() {
+                picked = Some(tool);
+            }
+        }
+        picked
     }
 
     /// The prediction controls shown in place of the survey heatmap row.
     fn plan_row(&mut self, ui: &mut egui::Ui) {
+        let (tool, survey) = (self.tool, self.mode == WorkMode::Survey);
+        let mut picked = None;
         ui.horizontal_wrapped(|ui| {
+            picked = Self::tool_chips(ui, tool, survey, true);
+            ui.separator();
             let mut changed = theme::switch_row(ui, &mut self.show_pred, "Predicted coverage").changed();
             ui.add_enabled_ui(self.show_pred, |ui| {
                 for b in [Band::Ghz2_4, Band::Ghz5, Band::Ghz6] {
@@ -903,6 +1011,9 @@ impl FloorTab {
                 self.pred_dirty = true;
             }
         });
+        if let Some(t) = picked {
+            self.set_tool(t);
+        }
     }
 
     /// Recompute the predicted coverage picture for the active floor.
@@ -1117,32 +1228,42 @@ impl FloorTab {
         if streaming && recent {
             return;
         }
-        self.wall_history.push(p.floor().walls.clone());
+        self.wall_history.push((p.floor().walls.clone(), p.floor().areas.clone()));
         if self.wall_history.len() > WALL_HISTORY {
             self.wall_history.remove(0);
         }
     }
 
     fn undo_walls(&mut self) {
-        if let (Some(walls), Some(p)) = (self.wall_history.pop(), self.project.as_mut()) {
+        if let (Some((walls, areas)), Some(p)) = (self.wall_history.pop(), self.project.as_mut()) {
             p.floor_mut().walls = walls;
+            p.floor_mut().areas = areas;
             self.selected_walls.clear();
+            self.selected_areas.clear();
+            self.area_start = None;
+            self.poly_points.clear();
             self.wall_start = None;
             self.autosave();
         }
     }
 
     fn delete_selected_walls(&mut self) {
-        if self.selected_walls.is_empty() {
+        if self.selected_walls.is_empty() && self.selected_areas.is_empty() {
             return;
         }
         self.remember_walls(false);
         let selected = std::mem::take(&mut self.selected_walls);
+        let areas = std::mem::take(&mut self.selected_areas);
         if let Some(p) = self.project.as_mut() {
             let mut i = 0;
             p.floor_mut().walls.retain(|_| {
                 i += 1;
                 !selected.contains(&(i - 1))
+            });
+            let mut j = 0;
+            p.floor_mut().areas.retain(|_| {
+                j += 1;
+                !areas.contains(&(j - 1))
             });
         }
         self.autosave();
@@ -1154,6 +1275,58 @@ impl FloorTab {
             WallEdit::Mode(m) => {
                 self.wall_mode = m;
                 self.wall_start = None;
+            }
+            WallEdit::AreaMode(m) => {
+                self.area_mode = m;
+                self.area_start = None;
+                self.poly_points.clear();
+            }
+            WallEdit::AreaKind(k) => {
+                self.obstacle_kind = k;
+                self.obstacle_height = k.default_height_m();
+                if self.tool == Tool::Select && !self.selected_areas.is_empty() {
+                    self.remember_walls(false);
+                    let selected = self.selected_areas.clone();
+                    if let Some(p) = self.project.as_mut() {
+                        for i in selected {
+                            if let Some(a) = p.floor_mut().areas.get_mut(i) {
+                                a.kind = k;
+                                a.height_m = k.default_height_m();
+                            }
+                        }
+                    }
+                    self.autosave();
+                }
+            }
+            WallEdit::AreaHeight(h) => {
+                if self.tool == Tool::Select && !self.selected_areas.is_empty() {
+                    self.remember_walls(true);
+                    let selected = self.selected_areas.clone();
+                    if let Some(p) = self.project.as_mut() {
+                        for i in selected {
+                            if let Some(a) = p.floor_mut().areas.get_mut(i) {
+                                a.height_m = h;
+                            }
+                        }
+                    }
+                    self.autosave();
+                } else {
+                    self.obstacle_height = h;
+                }
+            }
+            WallEdit::ClientKind(i) => {
+                self.client_kind = i.min(CLIENTS.len() - 1);
+                if i != CUSTOM_CLIENT {
+                    self.client_bands = CLIENTS[self.client_kind].1;
+                }
+            }
+            WallEdit::ClientHeight(h) => {
+                self.rx_height = h;
+                self.pred_dirty = true;
+            }
+            WallEdit::ClientBand(i, on) => {
+                self.client_kind = CUSTOM_CLIENT;
+                self.client_bands[i] = on;
             }
             WallEdit::Undo => self.undo_walls(),
             WallEdit::Delete => self.delete_selected_walls(),
@@ -1209,6 +1382,8 @@ impl FloorTab {
     fn set_tool(&mut self, tool: Tool) {
         self.tool = tool;
         self.wall_start = None;
+        self.area_start = None;
+        self.poly_points.clear();
         self.ap_drag = None;
         self.box_start = None;
         if tool == Tool::Scale {
@@ -1216,97 +1391,6 @@ impl FloorTab {
         }
         if matches!(tool, Tool::Walls) {
             self.selected_walls.clear();
-        }
-    }
-
-    /// The floating bar of tools over the top of the plan.
-    fn tool_bar(&mut self, ctx: &egui::Context, canvas: Rect) {
-        let r = theme::roles(ctx);
-        let survey = self.mode == WorkMode::Survey;
-        let tools: [(Tool, egui_material_icons::MaterialIcon, &str, &str); 6] = [
-            (Tool::Select, ICON_ARROW_SELECTOR_TOOL, "Select", "S"),
-            (Tool::Pan, ICON_PAN_TOOL, "Pan", "H"),
-            (Tool::Survey, ICON_PLACE, if survey { "Survey point" } else { "Survey data" }, "P"),
-            (Tool::Walls, ICON_ARCHITECTURE, "Walls", "W"),
-            (Tool::Scale, ICON_STRAIGHTEN, "Set scale", "C"),
-            (Tool::Aps, ICON_ROUTER, "Add Devices", "D"),
-        ];
-        let mut chosen = None;
-        egui::Area::new(egui::Id::unique("tool_bar"))
-            .order(egui::Order::Foreground)
-            .pivot(egui::Align2::CENTER_TOP)
-            .fixed_pos(canvas.center_top() + Vec2::new(0.0, 10.0))
-            .show(ctx, |ui| {
-                egui::Frame::new()
-                    .fill(r.surface_container_high)
-                    .stroke(Stroke::new(1.0, r.outline_variant))
-                    .corner_radius(22)
-                    .inner_margin(egui::Margin::symmetric(8, 6))
-                    .shadow(theme::shadow(r.shadow, 16, 0.18))
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 4.0;
-                            for (tool, icon, name, key) in tools {
-                                let on = self.tool == tool;
-                                let colour = if on { r.on_secondary_container } else { r.on_surface };
-                                let text = egui::RichText::new(icon.codepoint).font(egui::FontId::new(22.0, icon.font_family())).color(colour);
-                                let fill = if on { r.secondary_container } else { Color32::TRANSPARENT };
-                                let resp = ui.add_sized([40.0, 40.0], egui::Button::new(text).fill(fill).corner_radius(14));
-                                let resp = resp.on_hover_ui(|ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.label(egui::RichText::new(name).strong());
-                                        ui.label(egui::RichText::new(key).monospace());
-                                    });
-                                });
-                                if resp.clicked() {
-                                    chosen = Some(tool);
-                                }
-                            }
-                        });
-                    });
-            });
-        if let Some(t) = chosen {
-            self.set_tool(t);
-        }
-    }
-
-    /// What to do next, and a Done button, under the tool bar.
-    fn hint_banner(&mut self, ctx: &egui::Context, canvas: Rect) {
-        let r = theme::roles(ctx);
-        let survey = self.mode == WorkMode::Survey;
-        let text = match (self.tool, self.wall_mode) {
-            (Tool::Walls, WallMode::Wall) => "Click to place the start of a wall, then its end. Esc or right-click cancels, hold Shift to disable snapping.",
-            (Tool::Walls, WallMode::Room) => "Click one corner of the room, then the opposite corner. Esc or right-click cancels, hold Shift to disable snapping.",
-            (Tool::Aps, _) => "Pick a device on the right, then click the plan to place it. Drag a device to move it.",
-            (Tool::Scale, _) => "Click two points a known distance apart.",
-            (Tool::Survey, _) if survey => "Click where you are standing to scan, or click a survey point to see what was heard.",
-            (Tool::Survey, _) => "Click a survey point to see what was heard there. Planning never scans.",
-            (Tool::Pan, _) => "Drag to move the plan.",
-            (Tool::Align, _) => "Drag the ghost floor to line it up.",
-            _ => return,
-        };
-        let mut done = false;
-        egui::Area::new(egui::Id::unique("hint_banner"))
-            .order(egui::Order::Foreground)
-            .pivot(egui::Align2::CENTER_TOP)
-            .fixed_pos(canvas.center_top() + Vec2::new(0.0, 66.0))
-            .show(ctx, |ui| {
-                egui::Frame::new()
-                    .fill(r.surface_container_high)
-                    .stroke(Stroke::new(1.0, r.outline_variant))
-                    .corner_radius(20)
-                    .inner_margin(egui::Margin::symmetric(14, 6))
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.add(egui::Label::new(egui::RichText::new(text).size(13.0)).wrap_mode(egui::TextWrapMode::Extend));
-                            if theme::button(ui, ButtonKind::Filled, None, "Done").clicked() {
-                                done = true;
-                            }
-                        });
-                    });
-            });
-        if done {
-            self.set_tool(Tool::Select);
         }
     }
 
@@ -1371,7 +1455,7 @@ impl FloorTab {
     fn right_panel(&self, ctx: &egui::Context, canvas: Rect) -> (Vec<WallEdit>, Vec<ApEdit>) {
         let r = theme::roles(ctx);
         let (mut walls_out, mut aps_out) = (Vec::new(), Vec::new());
-        if !matches!(self.tool, Tool::Walls | Tool::Select | Tool::Aps) {
+        if !matches!(self.tool, Tool::Walls | Tool::Select | Tool::Aps | Tool::Obstacles | Tool::Client) {
             return (walls_out, aps_out);
         }
         let Some(floor) = self.project.as_ref().map(|p| p.floor()) else { return (walls_out, aps_out) };
@@ -1393,6 +1477,8 @@ impl FloorTab {
                             Tool::Walls => self.walls_content(ui, floor, &mut walls_out),
                             Tool::Select => self.select_content(ui, floor, &mut walls_out, &mut aps_out),
                             Tool::Aps => self.devices_content(ui, floor, &mut aps_out),
+                            Tool::Obstacles => self.obstacles_content(ui, floor, &mut walls_out),
+                            Tool::Client => self.client_content(ui, floor, &mut walls_out),
                             _ => {}
                         });
                     });
@@ -1413,6 +1499,11 @@ impl FloorTab {
                 edits.push(WallEdit::Mode(WallMode::Room));
             }
         });
+        let how = match self.wall_mode {
+            WallMode::Wall => "Click to place the start of a wall, then its end.",
+            WallMode::Room => "Click one corner of the room, then the opposite corner.",
+        };
+        ui.label(egui::RichText::new(format!("{how} Esc or right-click cancels, hold Shift to disable snapping.")).size(12.5).color(r.on_surface_variant));
         ui.add_space(4.0);
         self.material_rows(ui, Some(self.wall_material), edits);
         self.wall_height_controls(ui, floor, Some(self.wall_height), false, edits);
@@ -1427,9 +1518,10 @@ impl FloorTab {
         let r = theme::roles(ui.ctx());
         let walls: Vec<&Wall> = self.selected_walls.iter().filter_map(|&i| floor.walls.get(i)).collect();
         let aps: Vec<&PlannedAp> = self.aps_selected.iter().filter_map(|&i| floor.aps.get(i)).collect();
+        let areas: Vec<&Area> = self.selected_areas.iter().filter_map(|&i| floor.areas.get(i)).collect();
         ui.label(egui::RichText::new("Select").size(15.0).color(r.primary));
-        if walls.is_empty() && aps.is_empty() {
-            ui.label(egui::RichText::new("Click a wall or a device, or drag a box over several. Ctrl or Shift adds to the selection, Ctrl+A selects everything.").size(12.5).color(r.on_surface_variant));
+        if walls.is_empty() && aps.is_empty() && areas.is_empty() {
+            ui.label(egui::RichText::new("Click a wall, an area or a device, or drag a box over several. Ctrl or Shift adds to the selection, Ctrl+A selects everything.").size(12.5).color(r.on_surface_variant));
             return;
         }
         if !walls.is_empty() {
@@ -1441,6 +1533,15 @@ impl FloorTab {
             self.material_rows(ui, material, walls_out);
             self.wall_height_controls(ui, floor, height, true, walls_out);
         }
+        if !areas.is_empty() {
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new(format!("{} obstacle area{}", areas.len(), if areas.len() == 1 { "" } else { "s" })).size(13.0).color(r.on_surface_variant));
+            let first = areas[0];
+            let kind = areas.iter().all(|a| a.kind == first.kind).then_some(first.kind);
+            let height = areas.iter().all(|a| a.height_m == first.height_m).then_some(first.height_m);
+            self.kind_rows(ui, kind, walls_out);
+            self.area_height_controls(ui, floor, height, true, walls_out);
+        }
         if !aps.is_empty() {
             ui.add_space(8.0);
             self.device_controls(ui, floor, &aps, aps_out);
@@ -1451,12 +1552,162 @@ impl FloorTab {
                 walls_out.push(WallEdit::Undo);
             }
             if theme::button(ui, ButtonKind::Outlined, Some(ICON_DELETE), "Delete").clicked() {
-                if !walls.is_empty() {
+                if !walls.is_empty() || !areas.is_empty() {
                     walls_out.push(WallEdit::Delete);
                 }
                 if !aps.is_empty() {
                     aps_out.push(ApEdit::Delete);
                 }
+            }
+        });
+    }
+
+    /// Obstacle kinds with their loss per metre.
+    fn kind_rows(&self, ui: &mut egui::Ui, current: Option<ObstacleKind>, edits: &mut Vec<WallEdit>) {
+        let r = theme::roles(ui.ctx());
+        for k in ObstacleKind::ALL {
+            let [cr, cg, cb] = k.colour();
+            let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0), Sense::click());
+            if current == Some(k) {
+                ui.painter().rect_filled(rect, 8.0, r.secondary_container);
+            } else if resp.hovered() {
+                ui.painter().rect_filled(rect, 8.0, theme::state_layer(Color32::TRANSPARENT, r.on_surface, 0.08));
+            }
+            let font = egui::FontId::proportional(14.0);
+            ui.painter().text(rect.left_center() + Vec2::new(10.0, 0.0), egui::Align2::LEFT_CENTER, k.name(), font.clone(), r.on_surface);
+            ui.painter().circle_filled(rect.right_center() - Vec2::new(12.0, 0.0), 5.0, Color32::from_rgb(cr, cg, cb));
+            ui.painter().text(rect.right_center() - Vec2::new(26.0, 0.0), egui::Align2::RIGHT_CENTER, format!("{:.0} dB/m", k.db_per_m()), font, r.on_surface_variant);
+            if resp.clicked() {
+                edits.push(WallEdit::AreaKind(k));
+            }
+        }
+    }
+
+    /// Height controls for obstacle areas.
+    fn area_height_controls(&self, ui: &mut egui::Ui, floor: &Floor, shown: Option<Option<f32>>, selecting: bool, edits: &mut Vec<WallEdit>) {
+        let r = theme::roles(ui.ctx());
+        let ceiling = floor.ceiling_m;
+        ui.add_space(6.0);
+        let mut full = shown.is_none_or(|h| h.is_none());
+        let mixed = shown.is_none();
+        if theme::switch_row(ui, &mut full, "Full height").changed() {
+            edits.push(WallEdit::AreaHeight(if full { None } else { Some(ceiling) }));
+        }
+        let mut metres = shown.flatten().unwrap_or(ceiling);
+        ui.horizontal(|ui| {
+            ui.label("Height");
+            if ui.add_enabled(!full, egui::DragValue::new(&mut metres).range(0.1..=ceiling.max(0.2)).speed(0.05).suffix(" m").fixed_decimals(2)).changed() {
+                edits.push(WallEdit::AreaHeight(Some(metres.min(ceiling))));
+            }
+            if mixed && selecting {
+                ui.label(egui::RichText::new("(mixed)").size(12.0).color(r.on_surface_variant));
+            }
+        });
+    }
+
+    /// The obstacle menu: rectangle or polygon, kind, height.
+    fn obstacles_content(&self, ui: &mut egui::Ui, floor: &Floor, edits: &mut Vec<WallEdit>) {
+        let r = theme::roles(ui.ctx());
+        ui.label(egui::RichText::new("Obstacle Areas").size(15.0).color(r.primary));
+        ui.label(egui::RichText::new("Signal loses the dB per metre listed for the stretch it passes through, below the area's height.").size(12.5).color(r.on_surface_variant));
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            if theme::chip(ui, self.area_mode == AreaMode::Rectangle, Some(ICON_CROP_FREE), "Rectangle").clicked() {
+                edits.push(WallEdit::AreaMode(AreaMode::Rectangle));
+            }
+            if theme::chip(ui, self.area_mode == AreaMode::Polygon, Some(ICON_EDIT), "Polygon").clicked() {
+                edits.push(WallEdit::AreaMode(AreaMode::Polygon));
+            }
+        });
+        let how = match self.area_mode {
+            AreaMode::Rectangle => "Click one corner, then the opposite corner.",
+            AreaMode::Polygon => "Click each corner. Double-click, Enter, or a click on the first corner closes it.",
+        };
+        ui.label(egui::RichText::new(format!("{how} Esc or right-click cancels.")).size(12.5).color(r.on_surface_variant));
+        ui.add_space(4.0);
+        self.kind_rows(ui, Some(self.obstacle_kind), edits);
+        self.area_height_controls(ui, floor, Some(self.obstacle_height), false, edits);
+        ui.add_space(6.0);
+        if ui.add_enabled_ui(!self.wall_history.is_empty(), |ui| theme::button(ui, ButtonKind::Text, Some(ICON_UNDO), "Undo")).inner.clicked() {
+            edits.push(WallEdit::Undo);
+        }
+    }
+
+    /// How the simulated client at `pos` would connect: for each band it can use,
+    /// the best access point and signal, and the best of them overall.
+    fn client_results(&self, floor: &Floor, pos: Pos2) -> Vec<(usize, Band, Option<(usize, f32)>)> {
+        [Band::Ghz2_4, Band::Ghz5, Band::Ghz6]
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| self.client_bands[*i])
+            .map(|(i, b)| (i, b, predict::best_at(floor, b, [pos.x, pos.y], self.rx_height)))
+            .collect()
+    }
+
+    /// The client menu: device type, receiver height, and what it would get where it stands.
+    fn client_content(&self, ui: &mut egui::Ui, floor: &Floor, edits: &mut Vec<WallEdit>) {
+        let r = theme::roles(ui.ctx());
+        ui.label(egui::RichText::new("Client Experience").size(15.0).color(r.primary));
+        ui.label(egui::RichText::new("Click or drag on the plan to put a client down. Pan with the right mouse button.").size(12.5).color(r.on_surface_variant));
+        ui.add_space(4.0);
+        egui::ComboBox::from_id_salt("client_kind").selected_text(CLIENTS[self.client_kind].0).width(220.0).show_ui(ui, |ui| {
+            for (i, (name, _)) in CLIENTS.iter().enumerate() {
+                if ui.selectable_label(self.client_kind == i, *name).clicked() {
+                    edits.push(WallEdit::ClientKind(i));
+                }
+            }
+        });
+        if self.client_kind == CUSTOM_CLIENT {
+            ui.horizontal(|ui| {
+                for (i, label) in ["2.4", "5", "6"].into_iter().enumerate() {
+                    let mut on = self.client_bands[i];
+                    if ui.checkbox(&mut on, label).changed() {
+                        edits.push(WallEdit::ClientBand(i, on));
+                    }
+                }
+                ui.label("GHz");
+            });
+        }
+        ui.add_space(6.0);
+        let Some(pos) = self.client else {
+            ui.label("No client placed yet.");
+            return;
+        };
+        if floor.metres_per_px.is_none() {
+            ui.label("Set the plan's scale first, so distances are real.");
+            return;
+        }
+        let results = self.client_results(floor, pos);
+        let best = results.iter().filter_map(|(_, b, hit)| hit.map(|(ap, dbm)| (ap, *b, dbm))).max_by(|a, b| a.2.total_cmp(&b.2));
+        match best {
+            Some((ap, band, dbm)) if dbm >= NO_COVERAGE_DBM => {
+                let name = floor.aps.get(ap).map_or("access point", |a| a.name.as_str());
+                ui.label(egui::RichText::new(format!("Connected to {name}")).strong());
+                ui.label(egui::RichText::new(format!("{band}, {dbm:.0} dBm, {}", rating(dbm))).color(rating_colour(dbm)));
+            }
+            _ => {
+                ui.label(egui::RichText::new("No WiFi coverage").strong().color(r.error));
+                ui.label(egui::RichText::new("Move the client closer to an access point with a radio on one of its bands.").size(12.5).color(r.on_surface_variant));
+            }
+        }
+        ui.add_space(6.0);
+        for (_, band, hit) in results {
+            match hit {
+                Some((ap, dbm)) => {
+                    let name = floor.aps.get(ap).map_or("", |a| a.name.as_str());
+                    ui.label(egui::RichText::new(format!("{band}:  {dbm:.0} dBm  ({name})")).size(13.0).color(rating_colour(dbm)));
+                }
+                None => {
+                    ui.label(egui::RichText::new(format!("{band}:  no access point on this band")).size(13.0).color(r.on_surface_variant));
+                }
+            }
+        }
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("Client height");
+            let mut h = self.rx_height;
+            if ui.add(egui::DragValue::new(&mut h).range(0.0..=10.0).speed(0.05).suffix(" m").fixed_decimals(2)).changed() {
+                edits.push(WallEdit::ClientHeight(h));
             }
         });
     }
@@ -1467,6 +1718,7 @@ impl FloorTab {
         ui.label(egui::RichText::new("Add Devices").size(15.0).color(r.primary));
         let (installed, planned) = (floor.aps.iter().filter(|a| a.existing).count(), floor.aps.iter().filter(|a| !a.existing).count());
         ui.label(egui::RichText::new(format!("{installed} installed, {planned} planned on this floor")).size(12.5).color(r.on_surface_variant));
+        ui.label(egui::RichText::new("Pick a model, then click the plan to place it. Drag a device to move it.").size(12.5).color(r.on_surface_variant));
         ui.add_space(4.0);
         let mut search = self.model_search.clone();
         if ui.add(egui::TextEdit::singleline(&mut search).hint_text("Search").desired_width(f32::INFINITY)).changed() {
@@ -1738,7 +1990,77 @@ impl FloorTab {
         }
     }
 
-    /// Select by clicking a wall or dragging a box; Shift or Ctrl adds.
+    /// Draw an obstacle area: two corners for a rectangle, or points round a
+    /// polygon closed by a double-click, Enter or a click on the first point.
+    fn area_input(&mut self, resp: &egui::Response, ui: &egui::Ui, zoom: f32, to_plan: &impl Fn(Pos2) -> Pos2, size: (f32, f32)) {
+        let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
+        if resp.secondary_clicked() || escape {
+            self.area_start = None;
+            self.poly_points.clear();
+            return;
+        }
+        let inside = |p: Pos2| p.x >= 0.0 && p.y >= 0.0 && p.x <= size.0 && p.y <= size.1;
+        let click = resp.interact_pointer_pos().map(to_plan).filter(|p| inside(*p));
+        match self.area_mode {
+            AreaMode::Rectangle => {
+                if resp.clicked()
+                    && let Some(p) = click
+                {
+                    match self.area_start.take() {
+                        None => self.area_start = Some(p),
+                        Some(a) if (a.x - p.x).abs() > 2.0 && (a.y - p.y).abs() > 2.0 => self.add_area(Area::rectangle([a.x, a.y], [p.x, p.y], self.obstacle_kind)),
+                        Some(_) => {}
+                    }
+                }
+            }
+            AreaMode::Polygon => {
+                let finish = resp.double_clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if resp.clicked()
+                    && let Some(p) = click
+                {
+                    let closing = self.poly_points.len() >= 3 && self.poly_points[0].distance(p) <= WALL_SNAP_PX / zoom;
+                    if closing {
+                        self.finish_polygon();
+                    } else if !finish {
+                        self.poly_points.push(p);
+                    } else {
+                        // The second click of a double-click lands where the first did.
+                        self.finish_polygon();
+                    }
+                } else if finish {
+                    self.finish_polygon();
+                }
+            }
+        }
+    }
+
+    fn finish_polygon(&mut self) {
+        let mut pts: Vec<[f32; 2]> = self.poly_points.drain(..).map(|p| [p.x, p.y]).collect();
+        pts.dedup_by(|a, b| (a[0] - b[0]).abs() < 1.0 && (a[1] - b[1]).abs() < 1.0);
+        if pts.len() >= 3 {
+            self.add_area(Area::new(pts, self.obstacle_kind));
+        }
+    }
+
+    fn add_area(&mut self, mut area: Area) {
+        self.remember_walls(false);
+        area.height_m = self.obstacle_height;
+        if let Some(p) = self.project.as_mut() {
+            p.floor_mut().areas.push(area);
+        }
+        self.autosave();
+    }
+
+    /// Put the simulated client where the pointer is while it is pressed or clicked.
+    fn client_input(&mut self, resp: &egui::Response, to_plan: &impl Fn(Pos2) -> Pos2, size: (f32, f32)) {
+        if (resp.dragged_by(egui::PointerButton::Primary) || resp.clicked())
+            && let Some(p) = resp.interact_pointer_pos().map(to_plan)
+        {
+            self.client = Some(Pos2::new(p.x.clamp(0.0, size.0), p.y.clamp(0.0, size.1)));
+        }
+    }
+
+    /// Select walls and obstacle areas by clicking or dragging a box; Shift or Ctrl adds.
     fn select_walls(&mut self, resp: &egui::Response, ui: &egui::Ui, zoom: f32, to_plan: &impl Fn(Pos2) -> Pos2) {
         let additive = ui.input(|i| i.modifiers.shift || i.modifiers.command);
         let Some(floor) = self.project.as_ref().map(|p| p.floor()) else { return };
@@ -1753,10 +2075,13 @@ impl FloorTab {
         {
             let (min, max) = ([a.x.min(b.x), a.y.min(b.y)], [a.x.max(b.x), a.y.max(b.y)]);
             let hit = floor.walls.iter().enumerate().filter(|(_, w)| w.intersects_rect(min, max)).map(|(i, _)| i);
+            let hit_areas = floor.areas.iter().enumerate().filter(|(_, ar)| ar.intersects_rect(min, max)).map(|(i, _)| i);
             if !additive {
                 self.selected_walls.clear();
+                self.selected_areas.clear();
             }
             self.selected_walls.extend(hit);
+            self.selected_areas.extend(hit_areas);
         } else if resp.clicked()
             && let Some(p) = resp.interact_pointer_pos().map(to_plan)
         {
@@ -1769,15 +2094,24 @@ impl FloorTab {
                 .filter(|(_, d)| *d <= radius)
                 .min_by(|a, b| a.1.total_cmp(&b.1))
                 .map(|(i, _)| i);
-            match (nearest, additive) {
-                (Some(i), true) => {
-                    if !self.selected_walls.remove(&i) {
-                        self.selected_walls.insert(i);
-                    }
+            // With no wall under the click, an area under it is picked (the last drawn is on top).
+            let area = if nearest.is_none() { floor.areas.iter().rposition(|a| a.contains([p.x, p.y])) } else { None };
+            if !additive {
+                self.selected_walls.clear();
+                self.selected_areas.clear();
+            }
+            if let Some(i) = nearest {
+                if additive && self.selected_walls.contains(&i) {
+                    self.selected_walls.remove(&i);
+                } else {
+                    self.selected_walls.insert(i);
                 }
-                (Some(i), false) => self.selected_walls = BTreeSet::from([i]),
-                (None, false) => self.selected_walls.clear(),
-                (None, true) => {}
+            } else if let Some(i) = area {
+                if additive && self.selected_areas.contains(&i) {
+                    self.selected_areas.remove(&i);
+                } else {
+                    self.selected_areas.insert(i);
+                }
             }
         }
     }
@@ -1965,7 +2299,7 @@ impl FloorTab {
         // middle or right button then.
         let panning = if self.tool == Tool::Aps {
             resp.dragged() && self.ap_drag.is_none()
-        } else if matches!(self.tool, Tool::Select | Tool::Align) {
+        } else if matches!(self.tool, Tool::Select | Tool::Align | Tool::Client) {
             resp.dragged_by(egui::PointerButton::Middle) || resp.dragged_by(egui::PointerButton::Secondary)
         } else {
             resp.dragged()
@@ -2001,7 +2335,8 @@ impl FloorTab {
         if !ui.ctx().egui_wants_keyboard_input() && !ui.input(|i| i.modifiers.command || i.modifiers.alt) {
             let keys = [
                 (egui::Key::S, Tool::Select),
-                (egui::Key::H, Tool::Pan),
+                (egui::Key::O, Tool::Obstacles),
+                (egui::Key::E, Tool::Client),
                 (egui::Key::W, Tool::Walls),
                 (egui::Key::D, Tool::Aps),
                 (egui::Key::P, Tool::Survey),
@@ -2028,11 +2363,13 @@ impl FloorTab {
                 self.ap_input(&resp, ui, zoom, &to_plan, &to_screen, (img_w, img_h));
                 if escape {
                     self.selected_walls.clear();
+                    self.selected_areas.clear();
                 }
                 if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::A))
                     && let Some(p) = &self.project
                 {
                     self.selected_walls = (0..p.floor().walls.len()).collect();
+                    self.selected_areas = (0..p.floor().areas.len()).collect();
                 }
             }
             if ui.input(|i| i.key_pressed(egui::Key::Delete)) {
@@ -2041,6 +2378,10 @@ impl FloorTab {
             if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Z)) {
                 self.undo_walls();
             }
+        } else if self.tool == Tool::Obstacles {
+            self.area_input(&resp, ui, zoom, &to_plan, (img_w, img_h));
+        } else if self.tool == Tool::Client {
+            self.client_input(&resp, &to_plan, (img_w, img_h));
         } else if self.tool == Tool::Aps {
             self.ap_input(&resp, ui, zoom, &to_plan, &to_screen, (img_w, img_h));
         } else if resp.clicked()
@@ -2108,6 +2449,19 @@ impl FloorTab {
 
         let floor = self.project.as_ref().expect("checked above").floor();
         let ceiling = floor.ceiling_m;
+        for (i, area) in floor.areas.iter().enumerate() {
+            let [cr, cg, cb] = area.kind.colour();
+            let pts: Vec<Pos2> = area.points.iter().map(|p| to_screen(Pos2::new(p[0], p[1]))).collect();
+            let selected = self.selected_areas.contains(&i);
+            let outline = Stroke::new(if selected { 3.0 } else { 1.5 }, if selected { Color32::YELLOW } else { Color32::from_rgb(cr, cg, cb) });
+            if is_convex(&pts) {
+                painter.add(egui::Shape::convex_polygon(pts.clone(), Color32::from_rgba_unmultiplied(cr, cg, cb, 70), outline));
+            } else {
+                painter.add(egui::Shape::closed_line(pts.clone(), outline));
+            }
+            let centre = pts.iter().fold(Vec2::ZERO, |s, p| s + p.to_vec2()) / pts.len().max(1) as f32;
+            painter.text(centre.to_pos2(), egui::Align2::CENTER_CENTER, area.kind.name(), egui::FontId::proportional(12.0), Color32::BLACK);
+        }
         for (i, w) in floor.walls.iter().enumerate() {
             let ([r, g, b], width) = w.material.style();
             let (a, c) = (to_screen(Pos2::new(w.a[0], w.a[1])), to_screen(Pos2::new(w.b[0], w.b[1])));
@@ -2153,6 +2507,40 @@ impl FloorTab {
             let boxed = Rect::from_two_pos(to_screen(a), b);
             let accent = theme::roles(ui.ctx()).primary;
             painter.rect(boxed, 2.0, accent.gamma_multiply(0.15), Stroke::new(1.5, accent), egui::StrokeKind::Inside);
+        }
+        if self.tool == Tool::Obstacles
+            && let Some(hover) = ui.input(|i| i.pointer.hover_pos()).filter(|p| rect.contains(*p))
+        {
+            let [cr, cg, cb] = self.obstacle_kind.colour();
+            let stroke = Stroke::new(2.0, Color32::from_rgb(cr, cg, cb));
+            match (self.area_mode, self.area_start) {
+                (AreaMode::Rectangle, Some(a)) => {
+                    painter.rect(Rect::from_two_pos(to_screen(a), hover), 0.0, Color32::from_rgba_unmultiplied(cr, cg, cb, 50), stroke, egui::StrokeKind::Middle);
+                }
+                (AreaMode::Polygon, _) if !self.poly_points.is_empty() => {
+                    let mut line: Vec<Pos2> = self.poly_points.iter().map(|p| to_screen(*p)).collect();
+                    line.push(hover);
+                    painter.add(egui::Shape::line(line, stroke));
+                    painter.circle_stroke(to_screen(self.poly_points[0]), 6.0, Stroke::new(2.0, Color32::from_rgb(240, 140, 50)));
+                }
+                _ => {}
+            }
+            ui.ctx().request_repaint();
+        }
+        if let Some(pos) = self.client.filter(|_| self.tool == Tool::Client) {
+            let c = to_screen(pos);
+            let best = self.client_results(floor, pos).into_iter().filter_map(|(_, b, hit)| hit.map(|(ap, dbm)| (ap, b, dbm))).max_by(|a, b| a.2.total_cmp(&b.2));
+            let colour = match best {
+                Some((ap, _, dbm)) if dbm >= NO_COVERAGE_DBM => {
+                    if let Some(a) = floor.aps.get(ap) {
+                        painter.line_segment([c, to_screen(Pos2::new(a.x, a.y))], Stroke::new(2.0, rating_colour(dbm).gamma_multiply(0.8)));
+                    }
+                    rating_colour(dbm)
+                }
+                _ => Color32::from_rgb(220, 70, 60),
+            };
+            painter.circle(c, 14.0, colour, Stroke::new(2.5, Color32::WHITE));
+            painter.text(c, egui::Align2::CENTER_CENTER, ICON_SMARTPHONE.codepoint, egui::FontId::new(16.0, ICON_SMARTPHONE.font_family()), Color32::WHITE);
         }
         if self.view.show_path && self.mode == WorkMode::Survey {
             let path: Vec<Pos2> = floor.points.iter().map(|p| to_screen(Pos2::new(p.x, p.y))).collect();
@@ -2215,8 +2603,6 @@ impl FloorTab {
         if self.mode == WorkMode::Survey && self.show_heat {
             draw_legend(&painter, rect, &self.view);
         }
-        self.tool_bar(ui.ctx(), rect);
-        self.hint_banner(ui.ctx(), rect);
         let (wall_edits, ap_edits) = self.right_panel(ui.ctx(), rect);
         for edit in wall_edits {
             self.apply_wall_edit(edit);
@@ -2241,7 +2627,7 @@ impl FloorTab {
             return;
         }
         match self.tool {
-            Tool::Walls | Tool::Select | Tool::Align | Tool::Aps | Tool::Pan => {}
+            Tool::Walls | Tool::Select | Tool::Align | Tool::Aps | Tool::Obstacles | Tool::Client => {}
             Tool::Scale => {
                 if self.scale_clicks.len() >= 2 {
                     self.scale_clicks.clear();
@@ -2345,6 +2731,28 @@ impl FloorTab {
         let image = egui::ColorImage { size: [grid.w, grid.h], source_size: Vec2::new(grid.w as f32, grid.h as f32), pixels };
         self.heat_texture = Some(ctx.load_texture("heatmap", image, TextureOptions::LINEAR));
     }
+}
+
+/// Whether a polygon's corners all turn the same way, so it can be filled in one go.
+fn is_convex(pts: &[Pos2]) -> bool {
+    let n = pts.len();
+    if n < 3 {
+        return false;
+    }
+    let mut sign = 0.0f32;
+    for i in 0..n {
+        let (a, b, c) = (pts[i], pts[(i + 1) % n], pts[(i + 2) % n]);
+        let cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+        if cross.abs() < 1e-6 {
+            continue;
+        }
+        if sign == 0.0 {
+            sign = cross.signum();
+        } else if sign != cross.signum() {
+            return false;
+        }
+    }
+    true
 }
 
 /// Where the user's own access point models are kept.

@@ -516,10 +516,16 @@ fn figure_open(id: &str, title: &str, floor: &Floor) -> String {
     format!("<section class=\"fig\" id=\"{id}\"><h3>{}</h3><svg viewBox=\"0 0 {w} {h}\"><use href=\"#plan\"/>{}", esc(title), walls_svg(floor))
 }
 
-/// The drawn walls over the plan: coloured by material, dashed when lower than the ceiling.
+/// The drawn obstacle areas and walls over the plan: areas tinted by kind,
+/// walls coloured by material and dashed when lower than the ceiling.
 fn walls_svg(floor: &Floor) -> String {
     let unit = floor.width_px.max(floor.height_px) as f32 / 900.0;
     let mut o = String::new();
+    for a in &floor.areas {
+        let [r, g, b] = a.kind.colour();
+        let pts: Vec<String> = a.points.iter().map(|p| format!("{},{}", p[0], p[1])).collect();
+        let _ = write!(o, "<polygon points=\"{}\" fill=\"rgb({r},{g},{b})\" fill-opacity=\"0.28\" stroke=\"rgb({r},{g},{b})\" stroke-width=\"{}\"/>", pts.join(" "), 1.5 * unit);
+    }
     for w in &floor.walls {
         let ([r, g, b], width) = w.material.style();
         let low = w.effective_height_m(floor.ceiling_m) < floor.ceiling_m - 0.01;
@@ -862,7 +868,7 @@ mod tests {
     fn project(points: Vec<SurveyPoint>) -> Project {
         let mut png = Vec::new();
         image::RgbaImage::new(40, 20).write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
-        Project::new(Floor { name: "Test <plan>".into(), image: png, width_px: 40, height_px: 20, metres_per_px: Some(0.5), points, walls: Vec::new(), ceiling_m: 3.0, placement: Default::default(), aps: Vec::new() })
+        Project::new(Floor { name: "Test <plan>".into(), image: png, width_px: 40, height_px: 20, metres_per_px: Some(0.5), points, walls: Vec::new(), ceiling_m: 3.0, placement: Default::default(), aps: Vec::new(), areas: Vec::new() })
     }
 
     fn html(p: &Project) -> String {
@@ -1016,6 +1022,14 @@ mod tests {
         assert!(aps.iter().any(|a| a.bssid.is_empty() && a.name.as_deref() == Some("Store")));
         let out = html(&p);
         assert!(out.contains("(plotted)") && out.contains("not measured"));
+    }
+
+    #[test]
+    fn obstacle_areas_are_drawn_on_the_maps() {
+        let mut p = project(vec![point(5.0, "Mine", -50.0)]);
+        p.floor_mut().areas.push(wifispanner_core::obstacles::Area::rectangle([2.0, 2.0], [20.0, 10.0], wifispanner_core::obstacles::ObstacleKind::Car));
+        let out = html(&p);
+        assert_eq!(out.matches("<polygon ").count(), out.matches("<section class=\"fig\"").count());
     }
 
     #[test]

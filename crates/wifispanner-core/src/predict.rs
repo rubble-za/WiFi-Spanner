@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use wifispanner_scan::Band;
 
 use crate::heatmap::Grid;
+use crate::obstacles::Area;
 use crate::survey::Floor;
 
 /// A frequency band, in a form that can be saved.
@@ -178,6 +179,48 @@ fn metre_walls(floor: &Floor, mpp: f32, band: Band) -> Vec<MetreWall> {
         .collect()
 }
 
+/// What lies between the access points and the receivers, in metres.
+struct Scene {
+    walls: Vec<MetreWall>,
+    /// Obstacle areas with their points in metres, and each one's loss per metre and height.
+    areas: Vec<(Area, f32, f32)>,
+}
+
+fn scene(floor: &Floor, mpp: f32, band: Band) -> Scene {
+    let areas = floor
+        .areas
+        .iter()
+        .map(|a| {
+            let pts = a.points.iter().map(|p| [p[0] * mpp, p[1] * mpp]).collect();
+            (Area { points: pts, kind: a.kind, height_m: a.height_m }, a.kind.db_per_m(), a.effective_height_m(floor.ceiling_m))
+        })
+        .collect();
+    Scene { walls: metre_walls(floor, mpp, band), areas }
+}
+
+/// Loss in dB along the line through obstacle areas: each area's dB per metre
+/// for the length of the line inside it that is lower than the area is tall.
+fn areas_between(areas: &[(Area, f32, f32)], from: [f32; 3], to: [f32; 3]) -> f32 {
+    let length = ((to[0] - from[0]).powi(2) + (to[1] - from[1]).powi(2) + (to[2] - from[2]).powi(2)).sqrt();
+    let mut loss = 0.0;
+    for (area, db_per_m, height) in areas {
+        for (t0, t1) in area.inside_ranges([from[0], from[1]], [to[0], to[1]]) {
+            let dz = to[2] - from[2];
+            let (lo, hi) = if dz.abs() < 1e-6 {
+                if from[2] <= *height { (t0, t1) } else { continue }
+            } else {
+                // The line is below the height on one side of this parameter.
+                let tc = (height - from[2]) / dz;
+                if dz > 0.0 { (t0, t1.min(tc)) } else { (t0.max(tc), t1) }
+            };
+            if hi > lo {
+                loss += db_per_m * (hi - lo) * length;
+            }
+        }
+    }
+    loss
+}
+
 /// Loss in dB from the walls the line `from` to `to` (x, y, height in metres) passes through.
 fn walls_between(walls: &[MetreWall], from: [f32; 3], to: [f32; 3]) -> f32 {
     let (rx, ry) = (to[0] - from[0], to[1] - from[1]);
@@ -203,10 +246,26 @@ fn walls_between(walls: &[MetreWall], from: [f32; 3], to: [f32; 3]) -> f32 {
 }
 
 /// Signal in dBm at `rx` (x, y, height in metres) from one AP.
-fn signal_from(ap: &PlannedAp, eirp_dbm: f32, ap_xy_m: [f32; 2], rx: [f32; 3], walls: &[MetreWall], band: Band) -> f32 {
+fn signal_from(ap: &PlannedAp, eirp_dbm: f32, ap_xy_m: [f32; 2], rx: [f32; 3], scene: &Scene, band: Band) -> f32 {
     let from = [ap_xy_m[0], ap_xy_m[1], ap.height_m];
     let d = ((rx[0] - from[0]).powi(2) + (rx[1] - from[1]).powi(2) + (rx[2] - from[2]).powi(2)).sqrt().max(1.0);
-    eirp_dbm - loss_at_1m(band) - 10.0 * PATH_LOSS_EXPONENT * d.log10() - walls_between(walls, from, rx)
+    eirp_dbm - loss_at_1m(band) - 10.0 * PATH_LOSS_EXPONENT * d.log10() - walls_between(&scene.walls, from, rx) - areas_between(&scene.areas, from, rx)
+}
+
+/// The access point that serves a spot best and its signal there, for a
+/// receiver `rx_height_m` above the floor at `pos_px` on the plan; `None` when
+/// no enabled access point has a radio on the band, or the scale is not set.
+pub fn best_at(floor: &Floor, band: Band, pos_px: [f32; 2], rx_height_m: f32) -> Option<(usize, f32)> {
+    let mpp = floor.metres_per_px.filter(|m| m.is_finite() && *m > 0.0)?;
+    let scene = scene(floor, mpp, band);
+    let rx = [pos_px[0] * mpp, pos_px[1] * mpp, rx_height_m];
+    floor
+        .aps
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| a.enabled)
+        .filter_map(|(i, a)| a.eirp_dbm(band).map(|e| (i, signal_from(a, e, [a.x * mpp, a.y * mpp], rx, &scene, band))))
+        .max_by(|a, b| a.1.total_cmp(&b.1))
 }
 
 /// Why a prediction cannot be made.
@@ -238,7 +297,7 @@ pub fn predict(floor: &Floor, band: Band, rx_height_m: f32) -> Result<Grid, Unav
     let step = (longest / GRID_CELLS as f32).max(1.0);
     let w = ((floor.width_px as f32 / step).ceil() as usize).max(1);
     let h = ((floor.height_px as f32 / step).ceil() as usize).max(1);
-    let walls = metre_walls(floor, mpp, band);
+    let walls = scene(floor, mpp, band);
     let ap_m: Vec<[f32; 2]> = aps.iter().map(|(a, _)| [a.x * mpp, a.y * mpp]).collect();
     let mut dbm = vec![0.0f32; w * h];
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(h);
@@ -278,6 +337,7 @@ mod tests {
             ceiling_m: 3.0,
             placement: Placement::default(),
             aps,
+            areas: vec![],
         }
     }
 
@@ -339,6 +399,42 @@ mod tests {
         let (a, b) = (predict(&only_far, Band::Ghz5, 1.0).unwrap(), predict(&both, Band::Ghz5, 1.0).unwrap());
         assert!(at(&b, 0.1, 2.0, 5.0) > at(&a, 0.1, 2.0, 5.0) + 10.0);
         assert!((at(&a, 0.1, 18.0, 5.0) - at(&b, 0.1, 18.0, 5.0)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn an_obstacle_area_costs_its_loss_for_each_metre_the_signal_is_inside_it() {
+        use crate::obstacles::{Area, ObstacleKind};
+        let mut f = floor(vec![ap(20.0, 50.0, 1.0)], vec![]);
+        let clear = predict(&f, Band::Ghz5, 1.0).unwrap();
+        // 5 m deep (50 px at 0.1 m/px), 8 dB per metre, tall enough to catch a line at 1 m.
+        f.areas = vec![Area { height_m: Some(2.0), ..Area::rectangle([60.0, 0.0], [110.0, 100.0], ObstacleKind::ShelfWarehouse) }];
+        let shelved = predict(&f, Band::Ghz5, 1.0).unwrap();
+        let drop = at(&clear, 0.1, 15.0, 5.0) - at(&shelved, 0.1, 15.0, 5.0);
+        assert!((drop - 40.0).abs() < 0.5, "5 m x 8 dB/m, got {drop}");
+        assert!((at(&clear, 0.1, 3.0, 5.0) - at(&shelved, 0.1, 3.0, 5.0)).abs() < 1e-3, "in front of the shelves nothing changes");
+        // An AP above the top of the area is not slowed by it, while a lower one is.
+        f.aps = vec![ap(20.0, 50.0, 6.0)];
+        f.ceiling_m = 10.0;
+        let high = predict(&f, Band::Ghz5, 1.0).unwrap();
+        f.areas[0].height_m = Some(8.0);
+        let tall = predict(&f, Band::Ghz5, 1.0).unwrap();
+        assert!(at(&high, 0.1, 15.0, 5.0) > at(&tall, 0.1, 15.0, 5.0) + 10.0, "the line is only inside the area where it is low enough");
+    }
+
+    #[test]
+    fn best_at_names_the_serving_ap_and_agrees_with_the_map() {
+        let f = floor(vec![ap(20.0, 50.0, 2.7), ap(180.0, 50.0, 2.7)], vec![]);
+        let (i, dbm) = best_at(&f, Band::Ghz5, [30.0, 50.0], 1.0).unwrap();
+        assert_eq!(i, 0);
+        let (j, _) = best_at(&f, Band::Ghz5, [170.0, 50.0], 1.0).unwrap();
+        assert_eq!(j, 1);
+        let grid = predict(&f, Band::Ghz5, 1.0).unwrap();
+        let step = grid.step_px;
+        let cell = grid.dbm[((50.0 / step) as usize) * grid.w + (30.0 / step) as usize];
+        assert!((cell - dbm).abs() < 1.0, "{cell} vs {dbm}");
+        let mut none = f.clone();
+        none.metres_per_px = None;
+        assert!(best_at(&none, Band::Ghz5, [30.0, 50.0], 1.0).is_none());
     }
 
     #[test]
