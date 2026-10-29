@@ -44,6 +44,67 @@ impl Wall {
     }
 }
 
+impl Wall {
+    /// What is left of this wall once `cutter` is drawn over it: where the
+    /// cutter runs along the wall (both its ends within `tol` pixels of the
+    /// wall's line) the covered stretch is removed, leaving up to two pieces.
+    /// A wall the cutter does not lie along is returned whole.
+    pub fn carve(&self, cutter: &Wall, tol: f32) -> Vec<Wall> {
+        let (dx, dy) = (self.b[0] - self.a[0], self.b[1] - self.a[1]);
+        let len = dx.hypot(dy);
+        if len < 1.0 {
+            return vec![*self];
+        }
+        let along = |p: [f32; 2]| ((p[0] - self.a[0]) * dx + (p[1] - self.a[1]) * dy) / (len * len);
+        let off_line = |p: [f32; 2]| (dx * (p[1] - self.a[1]) - dy * (p[0] - self.a[0])).abs() / len;
+        if off_line(cutter.a) > tol || off_line(cutter.b) > tol {
+            return vec![*self];
+        }
+        let (t0, t1) = (along(cutter.a).min(along(cutter.b)), along(cutter.a).max(along(cutter.b)));
+        let (lo, hi) = (t0.max(0.0), t1.min(1.0));
+        if lo >= hi {
+            return vec![*self];
+        }
+        let at = |t: f32| [self.a[0] + t * dx, self.a[1] + t * dy];
+        let mut out = Vec::new();
+        if lo * len > MIN_PIECE_PX {
+            out.push(Wall { b: at(lo), ..*self });
+        }
+        if (1.0 - hi) * len > MIN_PIECE_PX {
+            out.push(Wall { a: at(hi), ..*self });
+        }
+        out
+    }
+
+    /// True when any part of the wall lies inside the rectangle.
+    pub fn intersects_rect(&self, min: [f32; 2], max: [f32; 2]) -> bool {
+        // Liang-Barsky clipping of the segment against the rectangle.
+        let (dx, dy) = (self.b[0] - self.a[0], self.b[1] - self.a[1]);
+        let (mut t0, mut t1) = (0.0f32, 1.0f32);
+        for (p, q) in [(-dx, self.a[0] - min[0]), (dx, max[0] - self.a[0]), (-dy, self.a[1] - min[1]), (dy, max[1] - self.a[1])] {
+            if p == 0.0 {
+                if q < 0.0 {
+                    return false;
+                }
+            } else {
+                let r = q / p;
+                if p < 0.0 {
+                    t0 = t0.max(r);
+                } else {
+                    t1 = t1.min(r);
+                }
+                if t0 > t1 {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+}
+
+/// Pieces shorter than this (pixels) left over by [`Wall::carve`] are dropped.
+const MIN_PIECE_PX: f32 = 2.0;
+
 /// Where a wall being drawn should land.
 ///
 /// The end of a wall snaps to an existing wall end within `radius` pixels.
@@ -124,6 +185,43 @@ mod tests {
         assert_eq!(snap(off, start, &[], 8.0), off, "a deliberate angle is left alone");
         let diag = snap([100.0, 98.0], start, &[], 8.0);
         assert!((diag[0] - diag[1]).abs() < 0.5, "45 degrees is a multiple of 15, got {diag:?}");
+    }
+
+    #[test]
+    fn a_door_drawn_along_a_wall_removes_that_stretch() {
+        let w = Wall::new([0.0, 0.0], [100.0, 0.0], Material::Concrete);
+        let door = Wall::new([40.0, 2.0], [60.0, -1.0], Material::Wood);
+        let parts = w.carve(&door, 5.0);
+        assert_eq!(parts.len(), 2);
+        assert_eq!((parts[0].a, parts[0].b[0].round()), ([0.0, 0.0], 40.0));
+        assert_eq!((parts[1].a[0].round(), parts[1].b), (60.0, [100.0, 0.0]));
+        assert!(parts.iter().all(|p| p.material == Material::Concrete));
+    }
+
+    #[test]
+    fn carving_handles_ends_overhang_and_unrelated_walls() {
+        let w = Wall::new([0.0, 0.0], [100.0, 0.0], Material::Concrete);
+        let at_end = w.carve(&Wall::new([70.0, 0.0], [100.0, 0.0], Material::Wood), 5.0);
+        assert_eq!(at_end.len(), 1, "only the stretch before the door remains");
+        assert!(w.carve(&Wall::new([-20.0, 0.0], [120.0, 0.0], Material::Glass), 5.0).is_empty(), "fully covered");
+        let across = Wall::new([50.0, -20.0], [50.0, 20.0], Material::Wood);
+        assert_eq!(w.carve(&across, 5.0), vec![w], "a crossing wall does not cut");
+        let beside = Wall::new([20.0, 30.0], [60.0, 30.0], Material::Wood);
+        assert_eq!(w.carve(&beside, 5.0), vec![w], "a parallel wall elsewhere does not cut");
+        let past = Wall::new([120.0, 0.0], [150.0, 0.0], Material::Wood);
+        assert_eq!(w.carve(&past, 5.0), vec![w], "no overlap");
+    }
+
+    #[test]
+    fn boxes_select_walls_they_touch() {
+        let w = Wall::new([0.0, 0.0], [100.0, 100.0], Material::Concrete);
+        assert!(w.intersects_rect([40.0, 40.0], [60.0, 60.0]), "crossing the box");
+        assert!(w.intersects_rect([-10.0, -10.0], [10.0, 10.0]), "an end inside");
+        assert!(w.intersects_rect([-10.0, -10.0], [200.0, 200.0]), "fully inside");
+        assert!(!w.intersects_rect([60.0, 0.0], [90.0, 30.0]), "beside the diagonal");
+        let flat = Wall::new([0.0, 5.0], [100.0, 5.0], Material::Concrete);
+        assert!(flat.intersects_rect([20.0, 0.0], [30.0, 10.0]));
+        assert!(!flat.intersects_rect([20.0, 6.0], [30.0, 10.0]));
     }
 
     #[test]

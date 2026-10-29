@@ -351,7 +351,7 @@ fn visuals(r: &Roles, dark: bool) -> egui::Visuals {
     v
 }
 
-fn shadow(color: Color32, blur: u8, alpha: f32) -> egui::Shadow {
+pub fn shadow(color: Color32, blur: u8, alpha: f32) -> egui::Shadow {
     egui::Shadow {
         offset: [0, 4],
         blur,
