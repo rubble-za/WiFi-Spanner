@@ -48,3 +48,12 @@ THIRD-PARTY SOFTWARE
 WiFi Spanner includes open-source libraries, fonts and data files under their
 own licences. They are listed with their licence texts in
 THIRD-PARTY-LICENSES.txt, which must be kept with binary distributions.
+
+Bundled fonts and icons (details and full licence texts in THIRD-PARTY-LICENSES.txt):
+- Roboto fonts, Copyright 2011 The Roboto Project Authors, Apache License 2.0.
+- IBM Plex Sans fonts, Copyright 2017 IBM Corp. with Reserved Font Name "Plex",
+  SIL Open Font License 1.1, used unmodified.
+- IBM Carbon icons, Copyright IBM Corp., Apache License 2.0. They were changed: each
+  icon was rasterised to a 96 x 96 pixel image and recoloured white.
+"IBM", "Carbon" and "Plex" are used only to name these works; WiFi Spanner is not
+affiliated with or endorsed by IBM.

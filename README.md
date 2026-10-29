@@ -66,3 +66,5 @@ must carry a different name and logo.
 Third-party libraries, fonts and data files keep their own licences, listed in
 [THIRD-PARTY-LICENSES.txt](THIRD-PARTY-LICENSES.txt). Regenerate it with
 `python3 -I packaging/third-party-licenses.py > THIRD-PARTY-LICENSES.txt`.
+The optional IBM Carbon look uses IBM Plex Sans (SIL OFL 1.1) and IBM Carbon icons (Apache 2.0,
+recoloured and rasterised); their licence texts are in that file and in `packaging/licenses/`.

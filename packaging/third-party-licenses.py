@@ -53,16 +53,25 @@ for text, labels in sorted(groups.values(), key=lambda g: g[1][0]):
     out += ["=" * 78, "Applies to:"]
     out += ["  " + l for l in sorted(set(labels))]
     out += ["-" * 78, text, ""]
-# Fonts bundled in the app's own sources rather than through a library.
-out += ["=" * 78, "Applies to:", "  IBM Plex Sans (crates/wifispanner-app/assets/fonts: Regular, Medium, SemiBold)",
-        "-" * 78,
-        "IBM Plex Sans is Copyright 2018 IBM Corp. with Reserved Font Name \"Plex\", and is",
-        "licensed under the SIL Open Font License, Version 1.1. The files are bundled",
-        "unmodified. The licence text and its FAQ are at:",
-        "",
-        "  https://scripts.sil.org/OFL",
-        "  https://github.com/IBM/plex",
-        ""]
+# Fonts and icons bundled in the app's own sources rather than through a library. Their full
+# licence texts are kept in packaging/licenses/ and printed here.
+here = os.path.dirname(os.path.abspath(__file__))
+def bundled(applies, intro, path):
+    text = open(os.path.join(here, "licenses", path), encoding="utf-8").read().strip()
+    return ["=" * 78, "Applies to:", "  " + applies, "-" * 78, intro, "", text, ""]
+out += bundled(
+    "IBM Plex Sans (crates/wifispanner-app/assets/fonts: Regular, Medium, SemiBold)",
+    "IBM Plex is Copyright (c) 2017 IBM Corp. with Reserved Font Name \"Plex\" (the font files\n"
+    "themselves say 2018). The files are used unmodified, under the SIL Open Font License 1.1, whose\n"
+    "text follows as published at https://github.com/IBM/plex.",
+    "IBM-Plex-OFL-1.1.txt")
+out += bundled(
+    "IBM Carbon icons (crates/wifispanner-app/assets/carbon-icons: 34 icons)",
+    "The icons are from the IBM Carbon Design System (https://github.com/carbon-design-system/carbon,\n"
+    "packages/icons), Copyright IBM Corp., under the Apache License 2.0, whose text follows as published\n"
+    "in that repository. CHANGES: each icon was rasterised to a 96 x 96 pixel image and recoloured white\n"
+    "on a transparent background; the original SVG files are kept unmodified alongside them.",
+    "Carbon-Icons-Apache-2.0.txt")
 if no_text:
     out += ["=" * 78, "Libraries whose licence is stated in their metadata but that ship no separate",
             "licence file (the named licence applies):"]
