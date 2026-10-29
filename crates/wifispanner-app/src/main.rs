@@ -56,7 +56,7 @@ fn main() -> eframe::Result {
     // Until the scanner is ready it is borderless and see-through apart from
     // the splash card, and clicks pass through to whatever is behind it.
     let saved = Settings::load();
-    let start = start_size(saved.window_size);
+    let start = start_size(saved.window_size, saved.screen_size);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size(start)
@@ -652,7 +652,7 @@ impl App {
     /// the default.
     fn target_window_size(&self, ctx: &egui::Context) -> egui::Vec2 {
         let screen = ctx.input(|i| i.viewport().monitor_size).unwrap_or(egui::vec2(8000.0, 8000.0));
-        restored_size(self.settings.window_size, screen)
+        restored_size(Some(start_size(self.settings.window_size, self.settings.screen_size)), screen)
     }
 
     /// Resize the window after the splash (retrying until it sticks), then
@@ -693,6 +693,12 @@ impl App {
         if !self.window.tracking {
             return;
         }
+        // A maximised or full-screen size is not the size to come back to.
+        let (maximized, fullscreen) = ctx.input(|i| (i.viewport().maximized.unwrap_or(false), i.viewport().fullscreen.unwrap_or(false)));
+        if maximized || fullscreen {
+            self.window.changed_at = None;
+            return;
+        }
         if (size - self.window.last_size).length() > 0.5 {
             self.window.last_size = size;
             self.window.changed_at = Some(now);
@@ -701,8 +707,10 @@ impl App {
             if now.duration_since(t) >= Duration::from_secs(1) {
                 self.window.changed_at = None;
                 let new = [size.x.round(), size.y.round()];
-                if self.settings.window_size != Some(new) {
+                let screen = ctx.input(|i| i.viewport().monitor_size).map(|s| [s.x.round(), s.y.round()]);
+                if self.settings.window_size != Some(new) || self.settings.screen_size != screen {
                     self.settings.window_size = Some(new);
+                    self.settings.screen_size = screen;
                     self.settings.save();
                 }
             } else {
@@ -1126,10 +1134,21 @@ fn draw_splash(ui: &mut egui::Ui, logo: Option<&egui::TextureHandle>) {
 
 /// The size to open the window at: the saved one within sane limits, else the
 /// default. The screen size is not known yet, so the desktop does the final fitting.
-fn start_size(saved: Option<[f32; 2]>) -> [f32; 2] {
-    match saved {
-        Some([w, h]) => [w.clamp(480.0, 4000.0), h.clamp(320.0, 4000.0)],
-        None => MAIN_SIZE,
+/// What a window leaves unusable on a screen (width, height): the title bar,
+/// the desktop panel and a grip on each side. A window kept inside this can
+/// always be reached and resized.
+const SCREEN_MARGIN: [f32; 2] = [24.0, 120.0];
+
+/// The size to open at. The desktop places the window before the app can move
+/// it, so a saved size is used only when it is known to fit the screen it was
+/// saved on; otherwise the default is safer than running off screen.
+fn start_size(saved: Option<[f32; 2]>, screen: Option<[f32; 2]>) -> [f32; 2] {
+    match (saved, screen) {
+        (Some(size), Some([sw, sh])) => {
+            let fit = restored_size(Some(size), egui::vec2(sw, sh));
+            [fit.x, fit.y]
+        }
+        _ => MAIN_SIZE,
     }
 }
 
@@ -1137,7 +1156,11 @@ fn start_size(saved: Option<[f32; 2]>) -> [f32; 2] {
 /// default when nothing is saved.
 fn restored_size(saved: Option<[f32; 2]>, screen: egui::Vec2) -> egui::Vec2 {
     match saved {
-        Some([w, h]) => egui::vec2(w.clamp(480.0, screen.x.max(480.0)), h.clamp(320.0, screen.y.max(320.0))),
+        Some([w, h]) => {
+            // Leave room for the title bar, the desktop panel and the window's edges.
+            let max = egui::vec2(screen.x - SCREEN_MARGIN[0], screen.y - SCREEN_MARGIN[1]);
+            egui::vec2(w.clamp(480.0, max.x.max(480.0)), h.clamp(320.0, max.y.max(320.0)))
+        }
         None => egui::vec2(MAIN_SIZE[0], MAIN_SIZE[1]),
     }
 }
@@ -1161,9 +1184,11 @@ mod tests {
 
     #[test]
     fn start_size_uses_the_saved_size_within_limits() {
-        assert_eq!(start_size(None), [1200.0, 700.0]);
-        assert_eq!(start_size(Some([1500.0, 900.0])), [1500.0, 900.0]);
-        assert_eq!(start_size(Some([10.0, 99999.0])), [480.0, 4000.0]);
+        let screen = Some([1920.0, 1080.0]);
+        assert_eq!(start_size(None, screen), [1200.0, 700.0]);
+        assert_eq!(start_size(Some([1500.0, 900.0]), None), [1200.0, 700.0], "a size from an unknown screen is not trusted");
+        assert_eq!(start_size(Some([1500.0, 900.0]), screen), [1500.0, 900.0]);
+        assert_eq!(start_size(Some([10.0, 99999.0]), screen), [480.0, 960.0]);
     }
 
     #[test]
@@ -1171,7 +1196,8 @@ mod tests {
         let screen = egui::vec2(1920.0, 1080.0);
         assert_eq!(restored_size(None, screen), egui::vec2(1200.0, 700.0));
         assert_eq!(restored_size(Some([1400.0, 900.0]), screen), egui::vec2(1400.0, 900.0));
-        assert_eq!(restored_size(Some([5000.0, 4000.0]), screen), screen, "a saved size from a bigger screen is shrunk");
+        assert_eq!(restored_size(Some([5000.0, 4000.0]), screen), egui::vec2(1896.0, 960.0), "a saved size from a bigger screen is shrunk");
+        assert_eq!(restored_size(Some([1920.0, 1060.0]), screen), egui::vec2(1896.0, 960.0), "a window never fills the whole screen");
         assert_eq!(restored_size(Some([10.0, 10.0]), screen), egui::vec2(480.0, 320.0), "a tiny size is raised");
     }
 }

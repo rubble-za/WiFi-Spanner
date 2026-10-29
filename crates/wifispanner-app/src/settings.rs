@@ -62,6 +62,11 @@ pub struct Settings {
     pub launcher_prompted: bool,
     /// Size of the window when it was last used, restored on the next start.
     pub window_size: Option<[f32; 2]>,
+    /// The screen the window size was saved on; a size is only trusted at
+    /// startup when this is known, since the window cannot be moved back on
+    /// screen afterwards.
+    #[serde(default)]
+    pub screen_size: Option<[f32; 2]>,
     // Scanner
     pub dwell_secs: u64,
     /// Primary card; `None` is Auto (the connected card, or the first).
@@ -91,6 +96,7 @@ impl Default for Settings {
             check_updates: true,
             launcher_prompted: false,
             window_size: None,
+            screen_size: None,
             dwell_secs: 3,
             card: None,
             use_all: false,
