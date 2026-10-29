@@ -49,6 +49,9 @@ impl Project {
         }
         p.version = Self::VERSION;
         p.active = p.active.min(p.floors.len() - 1);
+        for f in &mut p.floors {
+            f.migrate_ap_layers();
+        }
         Ok(p)
     }
 
@@ -141,9 +144,63 @@ pub struct Floor {
     /// Access points placed in the planner.
     #[serde(default)]
     pub aps: Vec<crate::predict::PlannedAp>,
+    /// The access points as plotted while surveying: where they really were
+    /// when the survey was taken. Planning works on copies in `aps`, so moving
+    /// those never changes this record.
+    #[serde(default)]
+    pub survey_aps: Vec<crate::predict::PlannedAp>,
     /// Areas that absorb signal (shelving, cars, foliage...).
     #[serde(default)]
     pub areas: Vec<crate::obstacles::Area>,
+}
+
+impl Floor {
+    /// The access points of the planning layer (`true`) or the survey layer.
+    pub fn layer(&self, planning: bool) -> &Vec<crate::predict::PlannedAp> {
+        if planning { &self.aps } else { &self.survey_aps }
+    }
+
+    pub fn layer_mut(&mut self, planning: bool) -> &mut Vec<crate::predict::PlannedAp> {
+        if planning { &mut self.aps } else { &mut self.survey_aps }
+    }
+
+    /// An id no access point on this floor has.
+    pub fn next_ap_id(&self) -> u64 {
+        self.aps.iter().chain(&self.survey_aps).map(|a| a.id).max().unwrap_or(0) + 1
+    }
+
+    /// Plot an installed access point: it goes in the survey record and a copy
+    /// goes in the plan, standing for the same device until it is moved there.
+    pub fn plot_installed(&mut self, mut ap: crate::predict::PlannedAp) {
+        ap.id = self.next_ap_id();
+        ap.existing = true;
+        ap.from = None;
+        let copy = crate::predict::PlannedAp { id: ap.id + 1, from: Some(ap.id), ..ap.clone() };
+        self.survey_aps.push(ap);
+        self.aps.push(copy);
+    }
+
+    /// Bring projects saved before the two layers into the new shape: give
+    /// every access point an id, and copy installed ones into the survey record.
+    pub fn migrate_ap_layers(&mut self) {
+        let mut next = self.next_ap_id();
+        for a in self.aps.iter_mut().chain(self.survey_aps.iter_mut()).filter(|a| a.id == 0) {
+            a.id = next;
+            next += 1;
+        }
+        if self.survey_aps.is_empty() {
+            let installed: Vec<_> = self.aps.iter().filter(|a| a.existing && a.from.is_none()).cloned().collect();
+            for a in installed {
+                let mut record = a.clone();
+                record.id = next;
+                next += 1;
+                if let Some(plan) = self.aps.iter_mut().find(|p| p.id == a.id) {
+                    plan.from = Some(record.id);
+                }
+                self.survey_aps.push(record);
+            }
+        }
+    }
 }
 
 fn default_ceiling() -> f32 {
@@ -316,7 +373,7 @@ mod tests {
     }
 
     fn blank(name: &str, mpp: Option<f32>) -> Floor {
-        Floor { name: name.into(), image: vec![], width_px: 100, height_px: 50, metres_per_px: mpp, points: vec![], walls: vec![], ceiling_m: 3.0, placement: Placement::default(), aps: vec![], areas: vec![] }
+        Floor { name: name.into(), image: vec![], width_px: 100, height_px: 50, metres_per_px: mpp, points: vec![], walls: vec![], ceiling_m: 3.0, placement: Placement::default(), aps: vec![], survey_aps: vec![], areas: vec![] }
     }
 
     #[test]
@@ -380,6 +437,41 @@ mod tests {
     }
 
     #[test]
+    fn plotting_an_installed_ap_also_puts_a_copy_in_the_plan_which_can_then_move() {
+        let mut f = blank("G", None);
+        f.plot_installed(crate::predict::PlannedAp::new("Reception".into(), 10.0, 20.0));
+        assert_eq!((f.survey_aps.len(), f.aps.len()), (1, 1));
+        let (record, copy) = (&f.survey_aps[0], &f.aps[0]);
+        assert!(record.existing && copy.existing);
+        assert_eq!(copy.from, Some(record.id));
+        assert_ne!(copy.id, record.id);
+        f.aps[0].x = 99.0;
+        assert_eq!(f.survey_aps[0].x, 10.0, "moving the plan's copy leaves the survey record alone");
+        assert!(f.layer(true)[0].x == 99.0 && f.layer(false)[0].x == 10.0);
+        let again = f.next_ap_id();
+        assert!(again > f.aps[0].id && again > f.survey_aps[0].id);
+    }
+
+    #[test]
+    fn projects_saved_with_installed_aps_in_one_list_get_a_survey_record() {
+        let mut f = blank("G", None);
+        let mut installed = crate::predict::PlannedAp::new("Old".into(), 5.0, 5.0);
+        installed.existing = true;
+        let planned = crate::predict::PlannedAp::new("Idea".into(), 8.0, 8.0);
+        f.aps = vec![installed, planned];
+        f.migrate_ap_layers();
+        assert_eq!(f.survey_aps.len(), 1, "only the installed one is a survey record");
+        assert_eq!(f.survey_aps[0].name, "Old");
+        assert_eq!(f.aps[0].from, Some(f.survey_aps[0].id));
+        assert!(f.aps.iter().chain(&f.survey_aps).all(|a| a.id != 0));
+        let ids: std::collections::BTreeSet<_> = f.aps.iter().chain(&f.survey_aps).map(|a| a.id).collect();
+        assert_eq!(ids.len(), 3, "ids are unique");
+        let mut again = f.clone();
+        again.migrate_ap_layers();
+        assert_eq!(again.survey_aps.len(), 1, "migrating twice changes nothing");
+    }
+
+    #[test]
     fn bssids_of_one_radio_share_a_key() {
         let key = |b: &str| ap_key(b, Band::Ghz5);
         assert_eq!(key("50:3d:d1:e7:4c:cc"), key("52:3d:d1:e7:4c:ce"), "other SSIDs of the same radio");
@@ -417,6 +509,7 @@ mod tests {
             ceiling_m: 4.5,
             placement: Placement::default(),
             aps: vec![],
+            survey_aps: vec![],
             areas: vec![],
         };
         let back = Project::from_json(&Project::new(floor).to_json().unwrap()).unwrap();

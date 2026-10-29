@@ -448,7 +448,7 @@ fn place_aps(floor: &Floor, band: Band) -> Vec<PlacedAp> {
     // Installed access points plotted on the plan stand where they really are:
     // one linked to a measured access point replaces its estimate, and any
     // other on this band is added as it is.
-    for plotted in floor.aps.iter().filter(|a| a.existing && a.radio(band).is_some()) {
+    for plotted in floor.survey_aps.iter().filter(|a| a.radio(band).is_some()) {
         let linked = plotted.link.as_ref().and_then(|key| out.iter_mut().find(|p| !p.plotted && ap_base_key(&p.bssid) == *key));
         match linked {
             Some(p) => {
@@ -868,7 +868,7 @@ mod tests {
     fn project(points: Vec<SurveyPoint>) -> Project {
         let mut png = Vec::new();
         image::RgbaImage::new(40, 20).write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
-        Project::new(Floor { name: "Test <plan>".into(), image: png, width_px: 40, height_px: 20, metres_per_px: Some(0.5), points, walls: Vec::new(), ceiling_m: 3.0, placement: Default::default(), aps: Vec::new(), areas: Vec::new() })
+        Project::new(Floor { name: "Test <plan>".into(), image: png, width_px: 40, height_px: 20, metres_per_px: Some(0.5), points, walls: Vec::new(), ceiling_m: 3.0, placement: Default::default(), aps: Vec::new(), survey_aps: Vec::new(), areas: Vec::new() })
     }
 
     fn html(p: &Project) -> String {
@@ -1014,7 +1014,8 @@ mod tests {
         other.existing = true;
         let mut planned_only = wifispanner_core::predict::PlannedAp::new("Idea".into(), 9.0, 9.0);
         planned_only.existing = false;
-        p.floor_mut().aps = vec![real, other, planned_only];
+        p.floor_mut().survey_aps = vec![real, other];
+        p.floor_mut().aps = vec![planned_only];
         let aps = place_aps(p.floor(), Band::Ghz5);
         assert_eq!(aps.len(), 2, "the estimate, replaced, plus the unlinked plotted one; planned ones are not in a survey report");
         let linked = aps.iter().find(|a| !a.bssid.is_empty()).unwrap();

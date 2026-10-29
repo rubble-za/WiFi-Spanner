@@ -466,7 +466,7 @@ impl FloorTab {
             Ok(d) => d,
             Err(e) => return self.status = format!("Not a usable image: {e}"),
         };
-        let floor = Floor { name, image: bytes, width_px: w, height_px: h, metres_per_px: None, points: Vec::new(), walls: Vec::new(), ceiling_m: wifispanner_core::walls::DEFAULT_CEILING_M, placement: Default::default(), aps: Vec::new(), areas: Vec::new() };
+        let floor = Floor { name, image: bytes, width_px: w, height_px: h, metres_per_px: None, points: Vec::new(), walls: Vec::new(), ceiling_m: wifispanner_core::walls::DEFAULT_CEILING_M, placement: Default::default(), aps: Vec::new(), survey_aps: Vec::new(), areas: Vec::new() };
         if std::mem::take(&mut self.adding_floor)
             && let Some(p) = self.project.as_mut()
         {
@@ -1077,29 +1077,34 @@ impl FloorTab {
             }
             _ => {}
         }
+        let planning = self.mode == WorkMode::Plan;
         let Some(p) = self.project.as_mut() else { return };
         let fl = p.floor_mut();
-        let selected: Vec<usize> = selected.into_iter().filter(|&i| i < fl.aps.len()).collect();
+        let selected: Vec<usize> = selected.into_iter().filter(|&i| i < fl.layer(planning).len()).collect();
         match edit {
             ApEdit::Delete => {
                 let mut i = 0;
-                fl.aps.retain(|_| {
+                fl.layer_mut(planning).retain(|_| {
                     i += 1;
                     !selected.contains(&(i - 1))
                 });
                 self.aps_selected.clear();
             }
             ApEdit::Duplicate => {
-                let copies: Vec<PlannedAp> = selected.iter().map(|&i| PlannedAp { x: fl.aps[i].x + 18.0, y: fl.aps[i].y + 18.0, name: format!("{} copy", fl.aps[i].name), ..fl.aps[i].clone() }).collect();
+                let copies: Vec<PlannedAp> = {
+                    let layer = fl.layer(planning);
+                    selected.iter().map(|&i| PlannedAp { x: layer[i].x + 18.0, y: layer[i].y + 18.0, name: format!("{} copy", layer[i].name), from: None, ..layer[i].clone() }).collect()
+                };
                 self.aps_selected.clear();
-                for c in copies {
-                    fl.aps.push(c);
-                    self.aps_selected.insert(fl.aps.len() - 1);
+                for mut c in copies {
+                    c.id = fl.next_ap_id();
+                    fl.layer_mut(planning).push(c);
+                    self.aps_selected.insert(fl.layer(planning).len() - 1);
                 }
             }
             ApEdit::SaveModel => {
                 if let [i] = selected[..] {
-                    let ap = &fl.aps[i];
+                    let ap = &fl.layer(planning)[i];
                     let radios = if ap.radios.is_empty() {
                         vec![Radio { band: RadioBand::Ghz2_4, tx_dbm: ap.tx_dbm, gain_dbi: ap.gain_dbi, eirp_cap_dbm: None }, Radio { band: RadioBand::Ghz5, tx_dbm: ap.tx_dbm, gain_dbi: ap.gain_dbi, eirp_cap_dbm: None }]
                     } else {
@@ -1116,13 +1121,13 @@ impl FloorTab {
                         let _ = std::fs::write(path, text);
                     }
                     self.models = catalog::merged(self.user_models.clone());
-                    self.status = format!("Saved \"{}\" to your models.", fl.aps[i].name);
+                    self.status = format!("Saved \"{}\" to your models.", fl.layer(planning)[i].name);
                 }
                 return;
             }
             edit => {
                 for &i in &selected {
-                    let ap = &mut fl.aps[i];
+                    let ap = &mut fl.layer_mut(planning)[i];
                     match &edit {
                         ApEdit::Name(n) if selected.len() == 1 => ap.name = n.clone(),
                         ApEdit::Name(_) => {}
@@ -1144,7 +1149,7 @@ impl FloorTab {
                     }
                 }
                 if let Some(&i) = selected.last() {
-                    let t = &fl.aps[i];
+                    let t = &fl.layer(planning)[i];
                     self.ap_template = PlannedAp { name: String::new(), x: 0.0, y: 0.0, existing: false, link: None, ..t.clone() };
                 }
             }
@@ -1471,12 +1476,19 @@ impl FloorTab {
                     .inner_margin(14)
                     .shadow(theme::shadow(r.shadow, 16, 0.18))
                     .show(ui, |ui| {
+                        let room = (canvas.height() - RIGHT_BUBBLES_TOP - 28.0).max(160.0);
+                        if self.tool == Tool::Aps {
+                            // The device list takes all the height there is.
+                            ui.set_width(300.0);
+                            self.devices_content(ui, floor, room, &mut aps_out);
+                            return;
+                        }
                         ui.set_width(250.0);
                         // Long menus scroll rather than run off the window.
-                        egui::ScrollArea::vertical().max_height((canvas.height() - RIGHT_BUBBLES_TOP - 40.0).max(160.0)).show(ui, |ui| match self.tool {
+                        egui::ScrollArea::vertical().max_height((room - 12.0).max(160.0)).show(ui, |ui| match self.tool {
                             Tool::Walls => self.walls_content(ui, floor, &mut walls_out),
                             Tool::Select => self.select_content(ui, floor, &mut walls_out, &mut aps_out),
-                            Tool::Aps => self.devices_content(ui, floor, &mut aps_out),
+                            Tool::Aps => {}
                             Tool::Obstacles => self.obstacles_content(ui, floor, &mut walls_out),
                             Tool::Client => self.client_content(ui, floor, &mut walls_out),
                             _ => {}
@@ -1517,7 +1529,7 @@ impl FloorTab {
     fn select_content(&self, ui: &mut egui::Ui, floor: &Floor, walls_out: &mut Vec<WallEdit>, aps_out: &mut Vec<ApEdit>) {
         let r = theme::roles(ui.ctx());
         let walls: Vec<&Wall> = self.selected_walls.iter().filter_map(|&i| floor.walls.get(i)).collect();
-        let aps: Vec<&PlannedAp> = self.aps_selected.iter().filter_map(|&i| floor.aps.get(i)).collect();
+        let aps: Vec<&PlannedAp> = self.aps_selected.iter().filter_map(|&i| floor.layer(self.mode == WorkMode::Plan).get(i)).collect();
         let areas: Vec<&Area> = self.selected_areas.iter().filter_map(|&i| floor.areas.get(i)).collect();
         ui.label(egui::RichText::new("Select").size(15.0).color(r.primary));
         if walls.is_empty() && aps.is_empty() && areas.is_empty() {
@@ -1640,7 +1652,7 @@ impl FloorTab {
             .into_iter()
             .enumerate()
             .filter(|(i, _)| self.client_bands[*i])
-            .map(|(i, b)| (i, b, predict::best_at(floor, b, [pos.x, pos.y], self.rx_height)))
+            .map(|(i, b)| (i, b, predict::best_at(floor, floor.layer(self.mode == WorkMode::Plan), b, [pos.x, pos.y], self.rx_height)))
             .collect()
     }
 
@@ -1681,7 +1693,7 @@ impl FloorTab {
         let best = results.iter().filter_map(|(_, b, hit)| hit.map(|(ap, dbm)| (ap, *b, dbm))).max_by(|a, b| a.2.total_cmp(&b.2));
         match best {
             Some((ap, band, dbm)) if dbm >= NO_COVERAGE_DBM => {
-                let name = floor.aps.get(ap).map_or("access point", |a| a.name.as_str());
+                let name = floor.layer(self.mode == WorkMode::Plan).get(ap).map_or("access point", |a| a.name.as_str());
                 ui.label(egui::RichText::new(format!("Connected to {name}")).strong());
                 ui.label(egui::RichText::new(format!("{band}, {dbm:.0} dBm, {}", rating(dbm))).color(rating_colour(dbm)));
             }
@@ -1694,7 +1706,7 @@ impl FloorTab {
         for (_, band, hit) in results {
             match hit {
                 Some((ap, dbm)) => {
-                    let name = floor.aps.get(ap).map_or("", |a| a.name.as_str());
+                    let name = floor.layer(self.mode == WorkMode::Plan).get(ap).map_or("", |a| a.name.as_str());
                     ui.label(egui::RichText::new(format!("{band}:  {dbm:.0} dBm  ({name})")).size(13.0).color(rating_colour(dbm)));
                 }
                 None => {
@@ -1713,11 +1725,13 @@ impl FloorTab {
     }
 
     /// The "Add Devices" menu: a searchable list of models to place.
-    fn devices_content(&self, ui: &mut egui::Ui, floor: &Floor, edits: &mut Vec<ApEdit>) {
+    fn devices_content(&self, ui: &mut egui::Ui, floor: &Floor, room: f32, edits: &mut Vec<ApEdit>) {
         let r = theme::roles(ui.ctx());
         ui.label(egui::RichText::new("Add Devices").size(15.0).color(r.primary));
-        let (installed, planned) = (floor.aps.iter().filter(|a| a.existing).count(), floor.aps.iter().filter(|a| !a.existing).count());
-        ui.label(egui::RichText::new(format!("{installed} installed, {planned} planned on this floor")).size(12.5).color(r.on_surface_variant));
+        let layer = floor.layer(self.mode == WorkMode::Plan);
+        let (installed, planned) = (layer.iter().filter(|a| a.existing).count(), layer.iter().filter(|a| !a.existing).count());
+        let counts = if self.mode == WorkMode::Plan { format!("{installed} from the survey, {planned} planned on this floor") } else { format!("{installed} installed access points plotted on this floor") };
+        ui.label(egui::RichText::new(counts).size(12.5).color(r.on_surface_variant));
         ui.label(egui::RichText::new("Pick a model, then click the plan to place it. Drag a device to move it.").size(12.5).color(r.on_surface_variant));
         ui.add_space(4.0);
         let mut search = self.model_search.clone();
@@ -1737,7 +1751,9 @@ impl FloorTab {
         if resp.clicked() {
             edits.push(ApEdit::Template(None));
         }
-        egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+        // Below the title, counts, hint, search and the custom row.
+        let list_height = (room - 190.0).max(120.0);
+        egui::ScrollArea::vertical().max_height(list_height).auto_shrink([false, false]).show(ui, |ui| {
             for m in catalog::search(&self.models, &self.model_search) {
                 let on = current.as_deref() == Some(m.id().as_str());
                 let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 46.0), Sense::click());
@@ -1902,7 +1918,7 @@ impl FloorTab {
         let selecting = self.tool == Tool::Select;
         let additive = ui.input(|i| i.modifiers.shift || i.modifiers.command);
         let near = |this: &Self, screen: Pos2| -> Option<usize> {
-            this.project.as_ref()?.floor().aps.iter().position(|a| to_screen(Pos2::new(a.x, a.y)).distance(screen) <= AP_PICK_PX)
+            this.project.as_ref()?.floor().layer(this.mode == WorkMode::Plan).iter().position(|a| to_screen(Pos2::new(a.x, a.y)).distance(screen) <= AP_PICK_PX)
         };
         if resp.drag_started_by(egui::PointerButton::Primary) {
             let origin = ui.input(|i| i.pointer.press_origin());
@@ -1923,9 +1939,10 @@ impl FloorTab {
         if self.ap_drag.is_some() && resp.dragged_by(egui::PointerButton::Primary) {
             let d = resp.drag_delta() / zoom;
             let moving = self.aps_selected.clone();
+            let planning = self.mode == WorkMode::Plan;
             if let Some(p) = self.project.as_mut() {
                 for i in moving {
-                    if let Some(a) = p.floor_mut().aps.get_mut(i) {
+                    if let Some(a) = p.floor_mut().layer_mut(planning).get_mut(i) {
                         a.x = (a.x + d.x).clamp(0.0, size.0);
                         a.y = (a.y + d.y).clamp(0.0, size.1);
                     }
@@ -1941,7 +1958,7 @@ impl FloorTab {
                     self.aps_selected.clear();
                 }
                 if let Some(p) = &self.project {
-                    let inside = p.floor().aps.iter().enumerate().filter(|(_, ap)| ap.x >= min.x && ap.x <= max.x && ap.y >= min.y && ap.y <= max.y).map(|(i, _)| i);
+                    let inside = p.floor().layer(self.mode == WorkMode::Plan).iter().enumerate().filter(|(_, ap)| ap.x >= min.x && ap.x <= max.x && ap.y >= min.y && ap.y <= max.y).map(|(i, _)| i);
                     self.aps_selected.extend(inside);
                 }
             }
@@ -1964,12 +1981,21 @@ impl FloorTab {
                 (None, _) => {
                     let p = to_plan(click);
                     if p.x >= 0.0 && p.y >= 0.0 && p.x <= size.0 && p.y <= size.1 {
-                        let installed = self.mode == WorkMode::Survey;
+                        let planning = self.mode == WorkMode::Plan;
                         let template = self.ap_template.clone();
                         if let Some(pr) = self.project.as_mut() {
                             let fl = pr.floor_mut();
-                            fl.aps.push(PlannedAp { name: format!("AP {}", fl.aps.len() + 1), x: p.x, y: p.y, existing: installed, ..template });
-                            self.aps_selected = BTreeSet::from([fl.aps.len() - 1]);
+                            let name = format!("AP {}", fl.layer(planning).len() + 1);
+                            let ap = PlannedAp { name, x: p.x, y: p.y, existing: !planning, ..template };
+                            if planning {
+                                let mut ap = ap;
+                                ap.id = fl.next_ap_id();
+                                fl.aps.push(ap);
+                            } else {
+                                // Plotting an installed access point also leaves a copy in the plan.
+                                fl.plot_installed(ap);
+                            }
+                            self.aps_selected = BTreeSet::from([fl.layer(planning).len() - 1]);
                         }
                         self.autosave();
                     }
@@ -1986,7 +2012,7 @@ impl FloorTab {
             && ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::A))
             && let Some(p) = &self.project
         {
-            self.aps_selected = (0..p.floor().aps.len()).collect();
+            self.aps_selected = (0..p.floor().layer(self.mode == WorkMode::Plan).len()).collect();
         }
     }
 
@@ -2532,7 +2558,7 @@ impl FloorTab {
             let best = self.client_results(floor, pos).into_iter().filter_map(|(_, b, hit)| hit.map(|(ap, dbm)| (ap, b, dbm))).max_by(|a, b| a.2.total_cmp(&b.2));
             let colour = match best {
                 Some((ap, _, dbm)) if dbm >= NO_COVERAGE_DBM => {
-                    if let Some(a) = floor.aps.get(ap) {
+                    if let Some(a) = floor.layer(self.mode == WorkMode::Plan).get(ap) {
                         painter.line_segment([c, to_screen(Pos2::new(a.x, a.y))], Stroke::new(2.0, rating_colour(dbm).gamma_multiply(0.8)));
                     }
                     rating_colour(dbm)
@@ -2575,11 +2601,15 @@ impl FloorTab {
                 painter.line_segment([to_screen(self.scale_clicks[0]), c], Stroke::new(2.0, Color32::from_rgb(220, 50, 50)));
             }
         }
-        for (i, a) in floor.aps.iter().enumerate() {
-            // While surveying only the installed ones are of interest.
-            if self.mode == WorkMode::Survey && !a.existing {
-                continue;
+        // In the plan, where each installed access point really was is shown as a faint
+        // ring, so a moved copy can be seen against the survey record.
+        if self.mode == WorkMode::Plan {
+            for a in &floor.survey_aps {
+                let c = to_screen(Pos2::new(a.x, a.y));
+                painter.circle_stroke(c, 13.0, Stroke::new(1.5, Color32::from_rgb(30, 90, 200).gamma_multiply(0.55)));
             }
+        }
+        for (i, a) in floor.layer(self.mode == WorkMode::Plan).iter().enumerate() {
             let c = to_screen(Pos2::new(a.x, a.y));
             let selected = self.aps_selected.contains(&i);
             let fill = match (a.enabled, a.existing) {

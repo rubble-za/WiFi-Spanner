@@ -86,6 +86,12 @@ pub struct PlannedAp {
     /// so reports can place it where it really is.
     #[serde(default)]
     pub link: Option<String>,
+    /// Unique on its floor; 0 until given one.
+    #[serde(default)]
+    pub id: u64,
+    /// For a plan access point standing for an installed one: that one's `id`.
+    #[serde(default)]
+    pub from: Option<u64>,
 }
 
 impl PlannedAp {
@@ -106,6 +112,8 @@ impl PlannedAp {
             model: None,
             radios: Vec::new(),
             link: None,
+            id: 0,
+            from: None,
         }
     }
 
@@ -255,13 +263,11 @@ fn signal_from(ap: &PlannedAp, eirp_dbm: f32, ap_xy_m: [f32; 2], rx: [f32; 3], s
 /// The access point that serves a spot best and its signal there, for a
 /// receiver `rx_height_m` above the floor at `pos_px` on the plan; `None` when
 /// no enabled access point has a radio on the band, or the scale is not set.
-pub fn best_at(floor: &Floor, band: Band, pos_px: [f32; 2], rx_height_m: f32) -> Option<(usize, f32)> {
+pub fn best_at(floor: &Floor, aps: &[PlannedAp], band: Band, pos_px: [f32; 2], rx_height_m: f32) -> Option<(usize, f32)> {
     let mpp = floor.metres_per_px.filter(|m| m.is_finite() && *m > 0.0)?;
     let scene = scene(floor, mpp, band);
     let rx = [pos_px[0] * mpp, pos_px[1] * mpp, rx_height_m];
-    floor
-        .aps
-        .iter()
+    aps.iter()
         .enumerate()
         .filter(|(_, a)| a.enabled)
         .filter_map(|(i, a)| a.eirp_dbm(band).map(|e| (i, signal_from(a, e, [a.x * mpp, a.y * mpp], rx, &scene, band))))
@@ -337,6 +343,7 @@ mod tests {
             ceiling_m: 3.0,
             placement: Placement::default(),
             aps,
+            survey_aps: vec![],
             areas: vec![],
         }
     }
@@ -424,9 +431,9 @@ mod tests {
     #[test]
     fn best_at_names_the_serving_ap_and_agrees_with_the_map() {
         let f = floor(vec![ap(20.0, 50.0, 2.7), ap(180.0, 50.0, 2.7)], vec![]);
-        let (i, dbm) = best_at(&f, Band::Ghz5, [30.0, 50.0], 1.0).unwrap();
+        let (i, dbm) = best_at(&f, &f.aps, Band::Ghz5, [30.0, 50.0], 1.0).unwrap();
         assert_eq!(i, 0);
-        let (j, _) = best_at(&f, Band::Ghz5, [170.0, 50.0], 1.0).unwrap();
+        let (j, _) = best_at(&f, &f.aps, Band::Ghz5, [170.0, 50.0], 1.0).unwrap();
         assert_eq!(j, 1);
         let grid = predict(&f, Band::Ghz5, 1.0).unwrap();
         let step = grid.step_px;
@@ -434,7 +441,7 @@ mod tests {
         assert!((cell - dbm).abs() < 1.0, "{cell} vs {dbm}");
         let mut none = f.clone();
         none.metres_per_px = None;
-        assert!(best_at(&none, Band::Ghz5, [30.0, 50.0], 1.0).is_none());
+        assert!(best_at(&none, &none.aps, Band::Ghz5, [30.0, 50.0], 1.0).is_none());
     }
 
     #[test]
