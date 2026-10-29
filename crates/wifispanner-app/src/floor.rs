@@ -723,8 +723,9 @@ impl FloorTab {
                                 } else {
                                     let shown = self.overlay == Some(i);
                                     let icon = if shown { ICON_VISIBILITY } else { ICON_VISIBILITY_OFF };
-                                    let text = egui::RichText::new(icon.codepoint).font(egui::FontId::new(18.0, icon.font_family()));
-                                    if ui.add(egui::Button::new(text).frame(false)).on_hover_text("Overlay this floor, ghosted, over the active one").clicked() {
+                                    let (eye, resp) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::click());
+                                    theme::paint_icon(ui.painter(), ctx, icon, eye.center(), 18.0, if resp.hovered() { r.on_surface } else { r.on_surface_variant });
+                                    if resp.on_hover_text("Overlay this floor, ghosted, over the active one").clicked() {
                                         edits.push(FloorEdit::ToggleOverlay(i));
                                     }
                                 }
@@ -763,7 +764,7 @@ impl FloorTab {
                                 let mut deg = p.floors[o].placement.rotation_deg;
                                 ui.horizontal(|ui| {
                                     ui.label("Rotate");
-                                    if ui.add(egui::DragValue::new(&mut deg).range(-180.0..=180.0).speed(0.1).suffix(" deg").fixed_decimals(1)).changed() {
+                                    if theme::field(ui, egui::DragValue::new(&mut deg).range(-180.0..=180.0).speed(0.1).suffix(" deg").fixed_decimals(1)).changed() {
                                         edits.push(FloorEdit::Rotate(deg));
                                     }
                                 });
@@ -781,7 +782,7 @@ impl FloorTab {
         let Some(name) = self.rename.as_mut() else { return };
         let (mut ok, mut cancel) = (false, false);
         theme::dialog(ctx, "Rename floor", 360.0, |ui| {
-            let edit = ui.add(egui::TextEdit::singleline(name).desired_width(f32::INFINITY));
+            let edit = theme::field(ui, egui::TextEdit::singleline(name).desired_width(f32::INFINITY));
             edit.request_focus();
             let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             theme::actions(ui, |ui| {
@@ -1005,7 +1006,7 @@ impl FloorTab {
                 Target::Ssid(s) => format!("SSID: {s}"),
                 Target::Bssid(b) => format!("AP: {b}"),
             };
-            egui::ComboBox::from_id_salt("heat_target").selected_text(label).width(260.0).show_ui(ui, |ui| {
+            theme::dropdown(egui::ComboBox::from_id_salt("heat_target").selected_text(label).width(260.0).show_ui(ui, |ui| {
                 changed |= ui.selectable_value(&mut self.target, Target::Any, "Strongest of any AP").changed();
                 for s in floor.ssids() {
                     changed |= ui.selectable_value(&mut self.target, Target::Ssid(s.clone()), format!("SSID: {s}")).changed();
@@ -1013,8 +1014,8 @@ impl FloorTab {
                 for b in floor.bssids() {
                     changed |= ui.selectable_value(&mut self.target, Target::Bssid(b.clone()), format!("AP: {b}")).changed();
                 }
-            });
-            egui::ComboBox::from_id_salt("heat_band")
+            }), ui);
+            theme::dropdown(egui::ComboBox::from_id_salt("heat_band")
                 .selected_text(self.band.map_or("All bands".to_string(), |b| b.to_string()))
                 .width(260.0)
                 .show_ui(ui, |ui| {
@@ -1022,7 +1023,7 @@ impl FloorTab {
                     for b in [Band::Ghz2_4, Band::Ghz5, Band::Ghz6] {
                         changed |= ui.selectable_value(&mut self.band, Some(b), b.to_string()).changed();
                     }
-                });
+                }), ui);
             ui.spacing_mut().slider_width = 160.0;
             theme::slider_f32(ui, &mut self.opacity, 0.1..=1.0, 2, "Opacity");
         });
@@ -1045,7 +1046,7 @@ impl FloorTab {
             });
             ui.horizontal(|ui| {
                 ui.label("Receiver height");
-                changed |= ui.add(egui::DragValue::new(&mut self.rx_height).range(0.0..=10.0).speed(0.05).suffix(" m").fixed_decimals(2)).changed();
+                changed |= theme::field(ui, egui::DragValue::new(&mut self.rx_height).range(0.0..=10.0).speed(0.05).suffix(" m").fixed_decimals(2)).changed();
             });
             ui.spacing_mut().slider_width = 160.0;
             theme::slider_f32(ui, &mut self.opacity, 0.1..=1.0, 2, "Opacity");
@@ -1250,7 +1251,7 @@ impl FloorTab {
         let (mut custom, mut close) = (false, false);
         let models = &self.models;
         theme::dialog(ctx, "Choose a model", 480.0, |ui| {
-            let edit = ui.add(egui::TextEdit::singleline(query).hint_text("Search, for example \"u7 pro\" or \"6e\"").desired_width(f32::INFINITY));
+            let edit = theme::field(ui, egui::TextEdit::singleline(query).hint_text("Search, for example \"u7 pro\" or \"6e\"").desired_width(f32::INFINITY));
             edit.request_focus();
             let found = catalog::search(models, query);
             ui.add_space(6.0);
@@ -1525,7 +1526,7 @@ impl FloorTab {
                 edits.push(WallEdit::Height(if full { None } else { Some(ceiling) }));
             }
             ui.label("Height");
-            if ui.add_enabled(!full, egui::DragValue::new(&mut metres).range(0.1..=ceiling.max(0.2)).speed(0.05).suffix(" m").fixed_decimals(2)).changed() {
+            if theme::field_enabled(ui, !full, egui::DragValue::new(&mut metres).range(0.1..=ceiling.max(0.2)).speed(0.05).suffix(" m").fixed_decimals(2)).changed() {
                 edits.push(WallEdit::Height(Some(metres.min(ceiling))));
             }
             if mixed && selecting {
@@ -1533,7 +1534,7 @@ impl FloorTab {
             }
             ui.label("Ceiling");
             let mut c = ceiling;
-            if ui.add(egui::DragValue::new(&mut c).range(1.0..=30.0).speed(0.05).suffix(" m").fixed_decimals(2)).changed() {
+            if theme::field(ui, egui::DragValue::new(&mut c).range(1.0..=30.0).speed(0.05).suffix(" m").fixed_decimals(2)).changed() {
                 edits.push(WallEdit::Ceiling(c));
             }
         });
@@ -1695,7 +1696,7 @@ impl FloorTab {
                 edits.push(WallEdit::AreaHeight(if full { None } else { Some(ceiling) }));
             }
             ui.label("Height");
-            if ui.add_enabled(!full, egui::DragValue::new(&mut metres).range(0.1..=ceiling.max(0.2)).speed(0.05).suffix(" m").fixed_decimals(2)).changed() {
+            if theme::field_enabled(ui, !full, egui::DragValue::new(&mut metres).range(0.1..=ceiling.max(0.2)).speed(0.05).suffix(" m").fixed_decimals(2)).changed() {
                 edits.push(WallEdit::AreaHeight(Some(metres.min(ceiling))));
             }
             if mixed && selecting {
@@ -1778,13 +1779,13 @@ impl FloorTab {
             }
         }
         ui.separator();
-        egui::ComboBox::from_id_salt("client_kind").selected_text(CLIENTS[self.client_kind].0).width(220.0).show_ui(ui, |ui| {
+        theme::dropdown(egui::ComboBox::from_id_salt("client_kind").selected_text(CLIENTS[self.client_kind].0).width(220.0).show_ui(ui, |ui| {
             for (i, (name, _)) in CLIENTS.iter().enumerate() {
                 if ui.selectable_label(self.client_kind == i, *name).clicked() {
                     edits.push(WallEdit::ClientKind(i));
                 }
             }
-        });
+        }), ui);
         if self.client_kind == CUSTOM_CLIENT {
             ui.horizontal(|ui| {
                 for (i, label) in ["2.4", "5", "6"].into_iter().enumerate() {
@@ -1799,7 +1800,7 @@ impl FloorTab {
         ui.horizontal(|ui| {
             ui.label("Client height");
             let mut h = self.rx_height;
-            if ui.add(egui::DragValue::new(&mut h).range(0.0..=10.0).speed(0.05).suffix(" m").fixed_decimals(2)).changed() {
+            if theme::field(ui, egui::DragValue::new(&mut h).range(0.0..=10.0).speed(0.05).suffix(" m").fixed_decimals(2)).changed() {
                 edits.push(WallEdit::ClientHeight(h));
             }
         });
@@ -1815,7 +1816,7 @@ impl FloorTab {
         ui.label(egui::RichText::new(counts).text_style(egui::TextStyle::Body).color(r.on_surface_variant));
         ui.label(egui::RichText::new("Pick a model, then click the plan.").text_style(egui::TextStyle::Body).color(r.on_surface_variant)).on_hover_text("Drag a placed device to move it.");
         let mut search = self.model_search.clone();
-        if ui.add(egui::TextEdit::singleline(&mut search).hint_text("Search").desired_width(f32::INFINITY)).changed() {
+        if theme::field(ui, egui::TextEdit::singleline(&mut search).hint_text("Search").desired_width(f32::INFINITY)).changed() {
             edits.push(ApEdit::Search(search));
         }
         ui.add_space(4.0);
@@ -1871,7 +1872,7 @@ impl FloorTab {
         ui.label(egui::RichText::new(format!("{} device{}", picked.len(), if picked.len() == 1 { "" } else { "s" })).text_style(egui::TextStyle::Body).color(r.on_surface_variant));
         if picked.len() == 1 {
             let mut name = first.name.clone();
-            if ui.add(egui::TextEdit::singleline(&mut name).desired_width(f32::INFINITY)).changed() {
+            if theme::field(ui, egui::TextEdit::singleline(&mut name).desired_width(f32::INFINITY)).changed() {
                 edits.push(ApEdit::Name(name));
             }
         }
@@ -1886,7 +1887,7 @@ impl FloorTab {
             if !options.is_empty() {
                 ui.label(egui::RichText::new("Measured as").text_style(egui::TextStyle::Body).color(r.on_surface_variant));
                 let current = first.link.as_ref().and_then(|k| options.iter().find(|o| &o.0 == k)).map_or("Not linked".to_string(), |o| o.1.clone());
-                egui::ComboBox::from_id_salt("ap_link").selected_text(current).width(230.0).show_ui(ui, |ui| {
+                theme::dropdown(egui::ComboBox::from_id_salt("ap_link").selected_text(current).width(230.0).show_ui(ui, |ui| {
                     if ui.selectable_label(first.link.is_none(), "Not linked").clicked() {
                         edits.push(ApEdit::Link(None));
                     }
@@ -1895,7 +1896,7 @@ impl FloorTab {
                             edits.push(ApEdit::Link(Some(key.clone())));
                         }
                     }
-                });
+                }), ui);
             }
         }
         ui.horizontal_wrapped(|ui| {
@@ -1929,12 +1930,12 @@ impl FloorTab {
             let (mut t, mut g) = (first.tx_dbm, first.gain_dbi);
             egui::Grid::new("ap_power").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
                 ui.label("Power, all bands");
-                if ui.add(egui::DragValue::new(&mut t).range(0.0..=36.0).speed(0.1).suffix(" dBm").fixed_decimals(1)).changed() {
+                if theme::field(ui, egui::DragValue::new(&mut t).range(0.0..=36.0).speed(0.1).suffix(" dBm").fixed_decimals(1)).changed() {
                     edits.push(ApEdit::Tx(t));
                 }
                 ui.end_row();
                 ui.label("Antenna gain");
-                if ui.add(egui::DragValue::new(&mut g).range(0.0..=20.0).speed(0.1).suffix(" dBi").fixed_decimals(1)).changed() {
+                if theme::field(ui, egui::DragValue::new(&mut g).range(0.0..=20.0).speed(0.1).suffix(" dBi").fixed_decimals(1)).changed() {
                     edits.push(ApEdit::Gain(g));
                 }
                 ui.end_row();
@@ -1955,7 +1956,7 @@ impl FloorTab {
         let mut h = first.height_m;
         ui.horizontal(|ui| {
             ui.label("Mount height");
-            if ui.add(egui::DragValue::new(&mut h).range(0.3..=30.0).speed(0.05).suffix(" m").fixed_decimals(2)).changed() {
+            if theme::field(ui, egui::DragValue::new(&mut h).range(0.3..=30.0).speed(0.05).suffix(" m").fixed_decimals(2)).changed() {
                 edits.push(ApEdit::Height(h));
             }
         });
@@ -2385,7 +2386,8 @@ impl FloorTab {
                 let fill = if resp.hovered() { theme::state_layer(fill, r.on_surface, 0.08) } else { fill };
                 let painter = ui.painter();
                 painter.rect(rect, theme::radius(ctx, theme::Shape::Pill, round_size(ctx)), fill, Stroke::new(1.0, r.outline_variant), egui::StrokeKind::Inside);
-                if let Some(icon) = &self.layers_icon {
+                let layers = if theme::skin(ctx) == theme::Skin::Carbon { theme::carbon_layers(ctx) } else { self.layers_icon.clone() };
+                if let Some(icon) = &layers {
                     let side = round_size(ctx) * 0.5;
                     let colour = if open { r.on_secondary_container } else { r.on_surface };
                     painter.image(icon.id(), Rect::from_center_size(rect.center(), Vec2::splat(side)), Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), colour);
@@ -2413,7 +2415,7 @@ impl FloorTab {
                 let painter = ui.painter();
                 painter.rect(rect, theme::radius(ctx, theme::Shape::Pill, round_size(ctx)), fill, Stroke::new(1.0, r.outline_variant), egui::StrokeKind::Inside);
                 let colour = if open { r.on_secondary_container } else { r.on_surface };
-                painter.text(rect.center(), egui::Align2::CENTER_CENTER, ICON_ROUTER.codepoint, egui::FontId::new(round_size(ctx) * 0.5, ICON_ROUTER.font_family()), colour);
+                theme::paint_icon(painter, ctx, ICON_ROUTER, rect.center(), round_size(ctx) * 0.5, colour);
                 toggled = resp.on_hover_text("Add Devices").clicked();
             });
         if toggled {
@@ -2695,7 +2697,7 @@ impl FloorTab {
                 _ => Color32::from_rgb(220, 70, 60),
             };
             painter.circle(c, 14.0, colour, Stroke::new(2.5, Color32::WHITE));
-            painter.text(c, egui::Align2::CENTER_CENTER, ICON_SMARTPHONE.codepoint, egui::FontId::new(16.0, ICON_SMARTPHONE.font_family()), Color32::WHITE);
+            theme::paint_icon(&painter, ui.ctx(), ICON_SMARTPHONE, c, 16.0, Color32::WHITE);
         }
         if self.view.show_path && self.mode == WorkMode::Survey {
             let path: Vec<Pos2> = floor.points.iter().map(|p| to_screen(Pos2::new(p.x, p.y))).collect();
@@ -2830,7 +2832,7 @@ impl FloorTab {
         theme::dialog(ctx, "Set scale", 380.0, |ui| {
             ui.label(format!("The two points are {:.0} px apart. What is that distance in metres?", a.distance(b)));
             ui.add_space(8.0);
-            let edit = ui.add(egui::TextEdit::singleline(&mut self.scale_input).hint_text("Distance in metres").desired_width(f32::INFINITY));
+            let edit = theme::field(ui, egui::TextEdit::singleline(&mut self.scale_input).hint_text("Distance in metres").desired_width(f32::INFINITY));
             edit.request_focus();
             let metres = self.scale_input.trim().replace(',', ".").parse::<f32>().ok().filter(|m| m.is_finite() && *m > 0.0);
             // Typing nothing yet is not an error; a distance that cannot be right is.

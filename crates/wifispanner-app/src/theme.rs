@@ -63,6 +63,161 @@ pub fn heading_style() -> TextStyle {
     TextStyle::Name("heading".into())
 }
 
+type Icon = egui_material_icons::MaterialIcon;
+
+/// Carbon's drawing for each Material icon the app uses: its name, its picture
+/// (white on transparent, tinted when drawn), from IBM's Carbon icon set.
+fn carbon_icon(icon: &Icon) -> Option<(&'static str, &'static [u8])> {
+    use egui_material_icons::icons::*;
+    macro_rules! art {
+        ($name:literal) => {
+            ($name, include_bytes!(concat!("../assets/carbon-icons/png/", $name, ".png")) as &'static [u8])
+        };
+    }
+    let table: [(Icon, (&str, &'static [u8])); 32] = [
+        (ICON_IMAGE, art!("image")),
+        (ICON_FOLDER, art!("folder")),
+        (ICON_FOLDER_OPEN, art!("folder--open")),
+        (ICON_REFRESH, art!("renew")),
+        (ICON_DESCRIPTION, art!("document")),
+        (ICON_ADD, art!("add")),
+        (ICON_UNDO, art!("undo")),
+        (ICON_SYSTEM_UPDATE, art!("upgrade")),
+        (ICON_SMARTPHONE, art!("mobile")),
+        (ICON_ROUTER, art!("router")),
+        (ICON_DELETE, art!("trash-can")),
+        (ICON_OPEN_IN_NEW, art!("launch")),
+        (ICON_MORE_VERT, art!("overflow-menu--vertical")),
+        (ICON_EDIT, art!("edit")),
+        (ICON_CROP_FREE, art!("area")),
+        (ICON_WIFI, art!("wifi")),
+        (ICON_VISIBILITY, art!("view")),
+        (ICON_VISIBILITY_OFF, art!("view--off")),
+        (ICON_VIEW_LIST, art!("list")),
+        (ICON_STRAIGHTEN, art!("ruler")),
+        (ICON_SETTINGS, art!("settings")),
+        (ICON_SAVE, art!("save")),
+        (ICON_RESTART_ALT, art!("reset")),
+        (ICON_POWER_SETTINGS_NEW, art!("power")),
+        (ICON_PLACE, art!("location")),
+        (ICON_OPEN_WITH, art!("move")),
+        (ICON_INFO, art!("information")),
+        (ICON_CLOSE, art!("close")),
+        (ICON_CHECK, art!("checkmark")),
+        (ICON_CATEGORY, art!("category")),
+        (ICON_ARROW_SELECTOR_TOOL, art!("cursor--1")),
+        (ICON_ARROW_BACK, art!("arrow--left")),
+    ];
+    table.into_iter().find(|(i, _)| i.codepoint == icon.codepoint).map(|(_, art)| art)
+}
+
+/// The picture of an icon in Carbon, as a texture; `None` in Material or for an icon Carbon has no drawing for.
+pub fn icon_texture(ctx: &egui::Context, icon: Icon) -> Option<egui::TextureHandle> {
+    if skin(ctx) != Skin::Carbon {
+        return None;
+    }
+    let (name, bytes) = carbon_icon(&icon)?;
+    carbon_texture(ctx, name, bytes)
+}
+
+/// A named Carbon picture, loaded once.
+pub fn carbon_texture(ctx: &egui::Context, name: &'static str, bytes: &'static [u8]) -> Option<egui::TextureHandle> {
+    let id = egui::Id::unique(("carbon-icon", name));
+    if let Some(tex) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
+        return Some(tex);
+    }
+    let img = image::load_from_memory(bytes).ok()?.to_rgba8();
+    let size = [img.width() as usize, img.height() as usize];
+    let tex = ctx.load_texture(format!("carbon-{name}"), egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw()), egui::TextureOptions::LINEAR);
+    ctx.data_mut(|d| d.insert_temp(id, tex.clone()));
+    Some(tex)
+}
+
+/// The layers picture for the floors button in Carbon.
+pub fn carbon_layers(ctx: &egui::Context) -> Option<egui::TextureHandle> {
+    carbon_texture(ctx, "layers", include_bytes!("../assets/carbon-icons/png/layers.png"))
+}
+
+/// Paint an icon centred on `centre`, `size` points across: Carbon's drawing in
+/// Carbon, Material's glyph otherwise.
+pub fn paint_icon(painter: &egui::Painter, ctx: &egui::Context, icon: Icon, centre: egui::Pos2, size: f32, colour: Color32) {
+    match icon_texture(ctx, icon) {
+        Some(tex) => {
+            let rect = egui::Rect::from_center_size(centre, egui::Vec2::splat(size));
+            painter.image(tex.id(), rect, egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)), colour);
+        }
+        None => {
+            painter.text(centre, egui::Align2::CENTER_CENTER, icon.codepoint, FontId::new(size, icon.font_family()), colour);
+        }
+    }
+}
+
+/// A small icon as an image for a button or menu entry, tinted with `colour`.
+fn icon_image(ctx: &egui::Context, icon: Icon, size: f32, colour: Color32) -> Option<egui::Image<'static>> {
+    let tex = icon_texture(ctx, icon)?;
+    Some(egui::Image::from_texture(egui::load::SizedTexture::from_handle(&tex)).fit_to_exact_size(egui::Vec2::splat(size)).tint(colour))
+}
+
+/// A menu entry with an icon, as an egui button: Carbon's drawing in Carbon, a
+/// glyph in the text in Material. With no icon the label is indented to line up.
+pub fn menu_entry(ui: &egui::Ui, icon: Option<Icon>, text: &str) -> egui::Button<'static> {
+    if let Some(img) = icon.and_then(|i| icon_image(ui.ctx(), i, 18.0, ui.visuals().text_color())) {
+        return egui::Button::new((img, text.to_string()));
+    }
+    egui::Button::new(icon_label(ui, icon, text))
+}
+
+/// A selectable menu entry with a check mark column that is blank when unchecked.
+pub fn check_entry(ui: &egui::Ui, selected: bool, text: &str) -> egui::Button<'static> {
+    let colour = if selected { ui.visuals().text_color() } else { Color32::TRANSPARENT };
+    if let Some(img) = icon_image(ui.ctx(), egui_material_icons::icons::ICON_CHECK, 18.0, colour) {
+        return egui::Button::selectable(selected, (img, text.to_string()));
+    }
+    egui::Button::selectable(selected, check_label(ui, selected, text))
+}
+
+/// A menu entry that opens a submenu.
+pub fn submenu<R>(ui: &mut egui::Ui, icon: Option<Icon>, text: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> (egui::Response, Option<egui::InnerResponse<R>>) {
+    let button = menu_entry(ui, icon, text).right_text(egui::containers::menu::SubMenuButton::arrow_atom(None));
+    egui::containers::menu::SubMenuButton::from_button(button).ui(ui, add)
+}
+
+/// Carbon's text field look: a 1 px bottom edge at rest, a 2 px outline while focused. A
+/// no-op in Material, whose fields are boxed by the widgets themselves.
+pub fn field_edge(ui: &egui::Ui, resp: &egui::Response) {
+    if skin(ui.ctx()) != Skin::Carbon {
+        return;
+    }
+    let r = roles(ui.ctx());
+    let rect = resp.rect;
+    if resp.has_focus() {
+        let focus = if ui.ctx().theme() == egui::Theme::Dark { Color32::WHITE } else { r.primary };
+        ui.painter().rect_stroke(rect.shrink(1.0), 0.0, Stroke::new(2.0, focus), egui::StrokeKind::Inside);
+    } else {
+        ui.painter().line_segment([rect.left_bottom() - egui::vec2(0.0, 0.5), rect.right_bottom() - egui::vec2(0.0, 0.5)], Stroke::new(1.0, r.outline));
+    }
+}
+
+/// Add a field (a text box or value box) and give it Carbon's edge.
+pub fn field(ui: &mut egui::Ui, widget: impl egui::Widget) -> egui::Response {
+    let resp = ui.add(widget);
+    field_edge(ui, &resp);
+    resp
+}
+
+/// Like [`field`], but greyed out unless `enabled`.
+pub fn field_enabled(ui: &mut egui::Ui, enabled: bool, widget: impl egui::Widget) -> egui::Response {
+    let resp = ui.add_enabled(enabled, widget);
+    field_edge(ui, &resp);
+    resp
+}
+
+/// Give a drop-down's closed box Carbon's edge, and pass it on.
+pub fn dropdown<R>(shown: egui::InnerResponse<R>, ui: &egui::Ui) -> egui::InnerResponse<R> {
+    field_edge(ui, &shown.response);
+    shown
+}
+
 /// The kinds of rounded shape in the app; Material rounds them, Carbon squares them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shape {
@@ -505,12 +660,12 @@ fn visuals(r: &Roles, dark: bool, skin: Skin) -> egui::Visuals {
         w.inactive.corner_radius = radius;
         w.hovered.bg_fill = hover;
         w.hovered.weak_bg_fill = hover;
-        w.hovered.bg_stroke = Stroke::new(1.0, r.outline);
+        w.hovered.bg_stroke = Stroke::NONE;
         w.hovered.fg_stroke = Stroke::new(1.0, r.on_surface);
         w.hovered.corner_radius = radius;
         w.active.bg_fill = press;
         w.active.weak_bg_fill = press;
-        w.active.bg_stroke = Stroke::new(1.0, r.link);
+        w.active.bg_stroke = Stroke::NONE;
         w.active.fg_stroke = Stroke::new(1.0, r.on_surface);
         w.active.corner_radius = radius;
     } else {
@@ -588,7 +743,7 @@ pub fn slider(ui: &mut egui::Ui, value: &mut f64, range: std::ops::RangeInclusiv
         }
         let mut v = *value;
         let speed = (hi - lo) / 200.0;
-        if ui.add(egui::DragValue::new(&mut v).range(lo..=hi).speed(speed).fixed_decimals(decimals)).changed() {
+        if field(ui, egui::DragValue::new(&mut v).range(lo..=hi).speed(speed).fixed_decimals(decimals)).changed() {
             *value = v;
             changed = true;
         }
@@ -638,6 +793,8 @@ struct PillStyle {
     hover_fg: Option<Color32>,
     /// A 2 px line along the bottom edge (Carbon's selected state).
     underline: Option<Color32>,
+    /// Carbon's buttons: the label on the left and the icon on the right, rather than centred.
+    icon_right: bool,
 }
 
 /// Vertical nudges, in points, that put the middle of the icon glyph and of
@@ -668,8 +825,10 @@ pub fn split_button(ui: &mut egui::Ui, kind: ButtonKind, icon: egui_material_ico
     let (pad, gap, icon_size) = ((height / 2.0).clamp(14.0, 20.0), 8.0 * scale, 20.0 * scale);
     let left_text = ui.painter().layout_no_wrap(left.to_string(), font.clone(), fg);
     let right_text = ui.painter().layout_no_wrap(right.to_string(), font, fg);
+    let picture = icon_texture(ui.ctx(), icon);
     let icon_galley = ui.painter().layout_no_wrap(icon.codepoint.to_string(), FontId::new(icon_size, icon.font_family()), fg);
-    let left_w = 2.0 * pad + icon_galley.size().x + gap + left_text.size().x;
+    let icon_slot = if picture.is_some() { icon_size } else { icon_galley.size().x };
+    let left_w = 2.0 * pad + icon_slot + gap + left_text.size().x;
     let right_w = 2.0 * pad + right_text.size().x;
     let (rect, _) = ui.allocate_exact_size(egui::vec2(left_w + right_w, height), egui::Sense::hover());
     let split = rect.left() + left_w;
@@ -691,10 +850,14 @@ pub fn split_button(ui: &mut egui::Ui, kind: ButtonKind, icon: egui_material_ico
     painter.line_segment([egui::pos2(split, rect.top() + height * 0.25), egui::pos2(split, rect.bottom() - height * 0.25)], Stroke::new(1.0, fg.gamma_multiply(0.4)));
     // Contents, placed as in a single pill.
     let mut x = left_rect.left() + pad;
-    let ink = ink_centre_y(&icon_galley).unwrap_or(icon_galley.size().y / 2.0 - ICON_NUDGE);
-    let icon_w = icon_galley.size().x;
-    painter.galley(egui::pos2(x, rect.center().y - ink), icon_galley, fg);
-    x += icon_w + gap;
+    if let Some(tex) = &picture {
+        let img_rect = egui::Rect::from_center_size(egui::pos2(x + icon_size / 2.0, rect.center().y), egui::Vec2::splat(icon_size));
+        painter.image(tex.id(), img_rect, egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)), fg);
+    } else {
+        let ink = ink_centre_y(&icon_galley).unwrap_or(icon_galley.size().y / 2.0 - ICON_NUDGE);
+        painter.galley(egui::pos2(x, rect.center().y - ink), icon_galley, fg);
+    }
+    x += icon_slot + gap;
     painter.galley(egui::pos2(x, rect.center().y - left_text.size().y / 2.0 + TEXT_NUDGE), left_text, fg);
     painter.galley(egui::pos2(right_rect.left() + pad, rect.center().y - right_text.size().y / 2.0 + TEXT_NUDGE), right_text, fg);
     left_resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, left));
@@ -717,10 +880,15 @@ fn pill(ui: &mut egui::Ui, style: PillStyle, icon: Option<egui_material_icons::M
     let text = ui.painter().layout_no_wrap(label.to_string(), font, style.fg);
     let scale = density(ui.ctx()).font_scale();
     let (pad, gap, icon_size) = ((height / 2.0).clamp(14.0, 20.0), 8.0 * scale, 20.0 * scale);
-    let icon_galley = icon.map(|i| ui.painter().layout_no_wrap(i.codepoint.to_string(), FontId::new(icon_size, i.font_family()), style.fg));
-    let icon_w = icon_galley.as_ref().map_or(0.0, |g| g.size().x + gap);
+    let picture = icon.and_then(|i| icon_texture(ui.ctx(), i));
+    let icon_galley = icon.filter(|_| picture.is_none()).map(|i| ui.painter().layout_no_wrap(i.codepoint.to_string(), FontId::new(icon_size, i.font_family()), style.fg));
+    let icon_w = icon_galley.as_ref().map_or(0.0, |g| g.size().x + gap) + if picture.is_some() { icon_size + gap } else { 0.0 };
     let content_w = icon_w + text.size().x;
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2((content_w + 2.0 * pad).max(64.0), height), egui::Sense::click());
+    // Carbon: 16 px in from each edge, and room between the label and an icon at the right.
+    let pad = if style.icon_right { 16.0 } else { pad };
+    let right_icon = style.icon_right && icon.is_some();
+    let width = if right_icon { pad + text.size().x + 2.0 * gap + icon_size + pad } else { content_w + 2.0 * pad };
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width.max(if style.icon_right { 96.0 } else { 64.0 }), height), egui::Sense::click());
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
     let radius = radius(ui.ctx(), Shape::Pill, height);
     let hot = resp.is_pointer_button_down_on() || resp.hovered();
@@ -736,7 +904,34 @@ fn pill(ui: &mut egui::Ui, style: PillStyle, icon: Option<egui_material_icons::M
     if resp.has_focus() {
         painter.rect_stroke(rect.expand(2.0), radius + 2, Stroke::new(2.0, r.primary), egui::StrokeKind::Outside);
     }
+    if right_icon {
+        // Label on the left, icon on the right.
+        let colour = if hot { style.hover_fg.unwrap_or(style.fg) } else { style.fg };
+        painter.galley_with_override_text_color(egui::pos2(rect.left() + pad, rect.center().y - text.size().y / 2.0 + TEXT_NUDGE), text, colour);
+        let centre = egui::pos2(rect.right() - pad - icon_size / 2.0, rect.center().y);
+        if let Some(tex) = &picture {
+            painter.image(tex.id(), egui::Rect::from_center_size(centre, egui::Vec2::splat(icon_size)), egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)), colour);
+        } else if let Some(g) = icon_galley {
+            let ink = ink_centre_y(&g).unwrap_or(g.size().y / 2.0 - ICON_NUDGE);
+            painter.galley_with_override_text_color(egui::pos2(centre.x - g.size().x / 2.0, centre.y - ink), g, colour);
+        }
+        if let Some(line) = style.underline {
+            painter.rect_filled(egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - 2.0), rect.right_bottom()), 0.0, line);
+        }
+        return resp;
+    }
+    if style.icon_right {
+        // No icon: just the label, from the left edge.
+        let colour = if hot { style.hover_fg.unwrap_or(style.fg) } else { style.fg };
+        painter.galley_with_override_text_color(egui::pos2(rect.left() + pad, rect.center().y - text.size().y / 2.0 + TEXT_NUDGE), text, colour);
+        return resp;
+    }
     let mut x = rect.center().x - content_w / 2.0;
+    if let Some(tex) = &picture {
+        let img_rect = egui::Rect::from_center_size(egui::pos2(x + icon_size / 2.0, rect.center().y), egui::Vec2::splat(icon_size));
+        painter.image(tex.id(), img_rect, egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)), if hot { style.hover_fg.unwrap_or(style.fg) } else { style.fg });
+        x += icon_size + gap;
+    }
     if let Some(g) = icon_galley {
         let w = g.size().x;
         // Icons differ in how far up the em box they sit, so each is centred on its own ink.
@@ -776,7 +971,7 @@ pub fn button(ui: &mut egui::Ui, kind: ButtonKind, icon: Option<egui_material_ic
     if skin(ui.ctx()) == Skin::Carbon {
         let (fill, hover, press, fg, hover_fg) = carbon_button(kind, ui.ctx().theme() == egui::Theme::Dark, r);
         let stroke = if kind == ButtonKind::Outlined { Stroke::new(1.0, fg) } else { Stroke::NONE };
-        return pill(ui, PillStyle { rest: fill, hover, press, fg, stroke, hover_fg, underline: None }, icon, label);
+        return pill(ui, PillStyle { rest: fill, hover, press, fg, stroke, hover_fg, underline: None, icon_right: true }, icon, label);
     }
     let (fill, fg, outline) = match kind {
         ButtonKind::Filled => (r.primary, r.on_primary, None),
@@ -789,7 +984,7 @@ pub fn button(ui: &mut egui::Ui, kind: ButtonKind, icon: Option<egui_material_ic
         ButtonKind::Outlined | ButtonKind::Text => r.primary.gamma_multiply(opacity),
     };
     let stroke = outline.map_or(Stroke::NONE, |c| Stroke::new(1.0, c));
-    pill(ui, PillStyle { rest: fill, hover: layer(0.08), press: layer(0.12), fg, stroke, hover_fg: None, underline: None }, icon, label)
+    pill(ui, PillStyle { rest: fill, hover: layer(0.08), press: layer(0.12), fg, stroke, hover_fg: None, underline: None, icon_right: false }, icon, label)
 }
 
 /// A chip, shaped and sized like the buttons: outlined at rest, filled when selected
@@ -806,7 +1001,7 @@ pub fn chip(ui: &mut egui::Ui, selected: bool, icon: Option<egui_material_icons:
             (Color32::TRANSPARENT, r.on_surface_variant, Stroke::new(1.0, r.outline))
         };
         let underline = selected.then_some(r.link);
-        return pill(ui, PillStyle { rest: fill, hover, press: r.secondary_container, fg, stroke, hover_fg: None, underline }, icon, label);
+        return pill(ui, PillStyle { rest: fill, hover, press: r.secondary_container, fg, stroke, hover_fg: None, underline, icon_right: false }, icon, label);
     }
     let (fill, fg, stroke) = if selected {
         (r.secondary_container, r.on_secondary_container, Stroke::NONE)
@@ -815,7 +1010,7 @@ pub fn chip(ui: &mut egui::Ui, selected: bool, icon: Option<egui_material_icons:
     };
     let layer = |opacity: f32| if selected { state_layer(fill, fg, opacity) } else { r.on_surface.gamma_multiply(opacity) };
     let icon = if selected { Some(egui_material_icons::icons::ICON_CHECK) } else { icon };
-    pill(ui, PillStyle { rest: fill, hover: layer(0.08), press: layer(0.12), fg, stroke, hover_fg: None, underline: None }, icon, label)
+    pill(ui, PillStyle { rest: fill, hover: layer(0.08), press: layer(0.12), fg, stroke, hover_fg: None, underline: None, icon_right: false }, icon, label)
 }
 
 /// A menu entry with a check mark column that is invisible when unchecked, so
@@ -879,7 +1074,14 @@ pub fn empty_state(
     let r = roles(ui.ctx());
     ui.vertical_centered(|ui| {
         ui.add_space((ui.available_height() * 0.25).max(24.0));
-        ui.label(icon.rich_text().size(64.0).color(r.outline));
+        match icon_image(ui.ctx(), icon, 64.0, r.outline) {
+            Some(img) => {
+                ui.add(img);
+            }
+            None => {
+                ui.label(icon.rich_text().size(64.0).color(r.outline));
+            }
+        }
         ui.add_space(8.0);
         ui.label(egui::RichText::new(headline).size(22.0).color(r.on_surface));
         ui.add_space(4.0);

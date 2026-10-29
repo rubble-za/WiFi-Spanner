@@ -327,18 +327,12 @@ fn new_card(ui: &mut egui::Ui, s: f32) -> egui::Response {
     if resp.hovered() {
         painter.rect_filled(rect, card_radius, r.primary.gamma_multiply(0.08));
     }
-    painter.text(
-        rect.center() - Vec2::new(0.0, 14.0 * s),
-        egui::Align2::CENTER_CENTER,
-        ICON_ADD.codepoint,
-        egui::FontId::new(56.0 * s, ICON_ADD.font_family()),
-        r.primary,
-    );
+    theme::paint_icon(painter, ui.ctx(), ICON_ADD, rect.center() - Vec2::new(0.0, 14.0 * s), 56.0 * s, r.primary);
     painter.text(
         rect.center() + Vec2::new(0.0, 36.0 * s),
         egui::Align2::CENTER_CENTER,
         "New project",
-        egui::FontId::new(15.0 * s, egui::FontFamily::Name("roboto-medium".into())),
+        { let mut f = theme::medium_style().resolve(ui.style()); f.size = 15.0 * s; f },
         r.on_surface,
     );
     painter.text(
@@ -375,13 +369,13 @@ fn project_card(ui: &mut egui::Ui, e: &Entry, summary: Option<&Summary>, thumb: 
         }
         None => {
             let icon = if summary.is_some_and(|s| s.error.is_some()) { ICON_DESCRIPTION } else { ICON_IMAGE };
-            painter.text(well.center(), egui::Align2::CENTER_CENTER, icon.codepoint, egui::FontId::new(40.0 * s, icon.font_family()), r.outline_variant);
+            theme::paint_icon(painter, ui.ctx(), icon, well.center(), 40.0 * s, r.outline_variant);
         }
     }
 
     // Name (one line, ellipsised) and details.
     let text_w = card_w - 2.0 * inset - 36.0 * s;
-    let mut name = egui::text::LayoutJob::simple(e.name.clone(), egui::FontId::new(15.0 * s, egui::FontFamily::Name("roboto-medium".into())), r.on_surface, text_w);
+    let mut name = egui::text::LayoutJob::simple(e.name.clone(), { let mut f = theme::medium_style().resolve(ui.style()); f.size = 15.0 * s; f }, r.on_surface, text_w);
     name.wrap.max_rows = 1;
     name.wrap.break_anywhere = true;
     name.wrap.overflow_character = Some('…');
@@ -402,24 +396,23 @@ fn project_card(ui: &mut egui::Ui, e: &Entry, summary: Option<&Summary>, thumb: 
     if more.hovered() || more.is_pointer_button_down_on() {
         painter_circle(ui, more_rect, r.on_surface.gamma_multiply(0.1));
     }
-    ui.painter().text(more_rect.center(), egui::Align2::CENTER_CENTER, ICON_MORE_VERT.codepoint, egui::FontId::new(22.0 * s, ICON_MORE_VERT.font_family()), r.on_surface_variant);
+    theme::paint_icon(ui.painter(), ui.ctx(), ICON_MORE_VERT, more_rect.center(), 22.0 * s, r.on_surface_variant);
     let mut menu = None;
     let usable = summary.is_some_and(|s| s.error.is_none());
     egui::Popup::menu(&more).show(|ui| {
         ui.set_min_width(210.0);
-        let label = |ui: &egui::Ui, icon, text: &str| theme::icon_label(ui, Some(icon), text);
         ui.add_enabled_ui(usable, |ui| {
-            if ui.button(label(ui, ICON_IMAGE, "Open")).clicked() {
+            if ui.add(theme::menu_entry(ui, Some(ICON_IMAGE), "Open")).clicked() {
                 menu = Some(MenuChoice::Open);
             }
-            if ui.button(label(ui, ICON_DESCRIPTION, "Generate report")).clicked() {
+            if ui.add(theme::menu_entry(ui, Some(ICON_DESCRIPTION), "Generate report")).clicked() {
                 menu = Some(MenuChoice::Report);
             }
-            if ui.button(label(ui, ICON_OPEN_IN_NEW, "Reports...")).clicked() {
+            if ui.add(theme::menu_entry(ui, Some(ICON_OPEN_IN_NEW), "Reports...")).clicked() {
                 menu = Some(MenuChoice::Reports);
             }
         });
-        if ui.button(label(ui, ICON_FOLDER, "Show in folder")).clicked() {
+        if ui.add(theme::menu_entry(ui, Some(ICON_FOLDER), "Show in folder")).clicked() {
             menu = Some(MenuChoice::ShowFile);
         }
     });

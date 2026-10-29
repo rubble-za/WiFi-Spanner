@@ -337,33 +337,30 @@ impl App {
         ui.set_min_width(230.0);
         ui.spacing_mut().interact_size.y = 34.0;
         ui.spacing_mut().button_padding = egui::vec2(12.0, 6.0);
-        let label = |ui: &egui::Ui, icon, text: &str| theme::icon_label(ui, icon, text);
-        ui.menu_button(label(ui, Some(ICON_FOLDER), "File"), |ui| {
-            if ui.button(label(ui, Some(ICON_IMAGE), "Open floor plan...")).clicked() {
+        theme::submenu(ui, Some(ICON_FOLDER), "File", |ui| {
+            if ui.add(theme::menu_entry(ui, Some(ICON_IMAGE), "Open floor plan...")).clicked() {
                 *action = Some(MenuAction::OpenPlan);
             }
-            if ui.button(label(ui, Some(ICON_FOLDER_OPEN), "Open project...")).clicked() {
+            if ui.add(theme::menu_entry(ui, Some(ICON_FOLDER_OPEN), "Open project...")).clicked() {
                 *action = Some(MenuAction::OpenProject);
             }
             ui.separator();
-            if ui.button(label(ui, Some(ICON_FOLDER), "Show projects folder")).clicked() {
+            if ui.add(theme::menu_entry(ui, Some(ICON_FOLDER), "Show projects folder")).clicked() {
                 *action = Some(MenuAction::ShowProjectsFolder);
             }
         });
-        if ui.button(label(ui, Some(ICON_SETTINGS), "Settings...")).clicked() {
+        if ui.add(theme::menu_entry(ui, Some(ICON_SETTINGS), "Settings...")).clicked() {
             self.settings_open = true;
         }
-        ui.menu_button(label(ui, Some(ICON_WIFI), "Adapters"), |ui| {
+        theme::submenu(ui, Some(ICON_WIFI), "Adapters", |ui| {
             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
             let before = self.settings.card.clone();
-            let auto = theme::check_label(ui, before.is_none(), "Auto (connected card)");
-            if ui.selectable_label(before.is_none(), auto).clicked() {
+            if ui.add(theme::check_entry(ui, before.is_none(), "Auto (connected card)")).clicked() {
                 self.settings.card = None;
             }
             for c in &self.cards {
                 let selected = before.as_ref() == Some(&c.name);
-                let text = theme::check_label(ui, selected, &c.label());
-                if ui.selectable_label(selected, text).clicked() {
+                if ui.add(theme::check_entry(ui, selected, &c.label())).clicked() {
                     self.settings.card = Some(c.name.clone());
                 }
             }
@@ -371,7 +368,7 @@ impl App {
                 ui.label("No Wi-Fi cards found");
             }
             ui.separator();
-            let refresh = ui.button(label(ui, Some(ICON_REFRESH), "Refresh cards")).clicked();
+            let refresh = ui.add(theme::menu_entry(ui, Some(ICON_REFRESH), "Refresh cards")).clicked();
             if refresh {
                 self.cards = list_cards().unwrap_or_default();
             }
@@ -379,12 +376,11 @@ impl App {
                 self.apply_settings();
             }
         });
-        ui.menu_button(label(ui, Some(ICON_VIEW_LIST), "Density"), |ui| {
+        theme::submenu(ui, Some(ICON_VIEW_LIST), "Density", |ui| {
             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
             let before = self.settings.density;
             for d in theme::Density::ALL {
-                let text = theme::check_label(ui, before == d, d.name());
-                if ui.selectable_label(before == d, text).clicked() {
+                if ui.add(theme::check_entry(ui, before == d, d.name())).clicked() {
                     self.settings.density = d;
                 }
             }
@@ -394,14 +390,14 @@ impl App {
             }
         });
         ui.separator();
-        if ui.button(label(ui, Some(ICON_SYSTEM_UPDATE), "Check for updates")).clicked() {
+        if ui.add(theme::menu_entry(ui, Some(ICON_SYSTEM_UPDATE), "Check for updates")).clicked() {
             *action = Some(MenuAction::CheckUpdates);
         }
-        if ui.button(label(ui, Some(ICON_INFO), "About...")).clicked() {
+        if ui.add(theme::menu_entry(ui, Some(ICON_INFO), "About...")).clicked() {
             self.about_open = true;
         }
         ui.separator();
-        if ui.button(label(ui, Some(ICON_POWER_SETTINGS_NEW), "Quit")).clicked() {
+        if ui.add(theme::menu_entry(ui, Some(ICON_POWER_SETTINGS_NEW), "Quit")).clicked() {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }

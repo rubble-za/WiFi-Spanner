@@ -140,11 +140,11 @@ fn general(ui: &mut egui::Ui, s: &mut Settings, launcher: &mut LauncherView) {
 
 fn scanner(ui: &mut egui::Ui, s: &mut Settings, cards: &[WifiCard]) {
     ui.label(crate::theme::medium("Scan time"));
-    egui::ComboBox::from_id_salt("dwell").selected_text(format!("{} s", s.dwell_secs)).show_ui(ui, |ui| {
+    crate::theme::dropdown(egui::ComboBox::from_id_salt("dwell").selected_text(format!("{} s", s.dwell_secs)).show_ui(ui, |ui| {
         for d in DWELLS {
             ui.selectable_value(&mut s.dwell_secs, d, format!("{d} s"));
         }
-    });
+    }), ui);
     ui.weak(
         "Scanning repeats for this long and the readings are averaged. Longer is steadier and gives 6 GHz networks \
          more chances to be heard, so use 5 or 10 s for surveys.",
@@ -171,11 +171,11 @@ fn survey(ui: &mut egui::Ui, s: &mut Settings) {
     crate::theme::switch_row(ui, &mut s.show_numbers, "Show point numbers");
     ui.add_space(8.0);
     ui.label(crate::theme::medium("Point marker size"));
-    egui::ComboBox::from_id_salt("marker").selected_text(s.marker_size.name()).show_ui(ui, |ui| {
+    crate::theme::dropdown(egui::ComboBox::from_id_salt("marker").selected_text(s.marker_size.name()).show_ui(ui, |ui| {
         for m in MarkerSize::ALL {
             ui.selectable_value(&mut s.marker_size, m, m.name());
         }
-    });
+    }), ui);
     ui.add_space(12.0);
     if crate::theme::button(ui, crate::theme::ButtonKind::Outlined, Some(egui_material_icons::icons::ICON_REFRESH), "Reset survey settings").clicked() {
         s.reset_survey();
