@@ -55,6 +55,37 @@ impl Density {
         }
     }
 
+    /// Height of buttons, chips and fields in the toolbars.
+    pub fn button_height(self) -> f32 {
+        match self {
+            Density::Compact => 28.0,
+            Density::Smaller => 34.0,
+            Density::Default => 40.0,
+            Density::Larger => 48.0,
+        }
+    }
+
+    /// Height of the top bar's row (tabs and menu button).
+    pub fn bar_height(self) -> f32 {
+        match self {
+            Density::Compact => 36.0,
+            Density::Smaller => 42.0,
+            Density::Default => 48.0,
+            Density::Larger => 56.0,
+        }
+    }
+
+    /// Vertical padding inside buttons, drop-downs and value fields, so a field's
+    /// own height shrinks and grows with the density.
+    pub fn padding_y(self) -> f32 {
+        match self {
+            Density::Compact => 3.0,
+            Density::Smaller => 6.0,
+            Density::Default => 9.0,
+            Density::Larger => 11.0,
+        }
+    }
+
     /// Multiplier for body text sizes.
     pub fn font_scale(self) -> f32 {
         match self {
@@ -209,7 +240,13 @@ pub fn set_mode(ctx: &egui::Context, mode: ThemeMode) {
 
 /// Apply a density to both themes' type sizes and spacing.
 pub fn set_density(ctx: &egui::Context, density: Density) {
+    ctx.data_mut(|d| d.insert_temp(egui::Id::unique("density"), density));
     ctx.all_styles_mut(|style| shape_style(style, density));
+}
+
+/// The density in use.
+pub fn density(ctx: &egui::Context) -> Density {
+    ctx.data(|d| d.get_temp(egui::Id::unique("density"))).unwrap_or_default()
 }
 
 fn install_fonts(ctx: &egui::Context) {
@@ -244,7 +281,7 @@ fn shape_style(style: &mut egui::Style, density: Density) {
     .into();
     let sp = &mut style.spacing;
     sp.item_spacing = egui::vec2(10.0, density.item_gap());
-    sp.button_padding = egui::vec2(20.0, 9.0);
+    sp.button_padding = egui::vec2(20.0, density.padding_y());
     sp.interact_size = egui::vec2(48.0, density.row_height());
     sp.window_margin = Margin::same(24);
     sp.menu_margin = Margin::symmetric(8, 8);
@@ -274,7 +311,8 @@ fn visuals(r: &Roles, dark: bool) -> egui::Visuals {
     v.indent_has_left_vline = false;
     v.striped = true;
 
-    let radius = CornerRadius::same(12);
+    // Pills, like the buttons: egui rounds no further than half a control's height.
+    let radius = CornerRadius::same(20);
     let w = &mut v.widgets;
     // Labels and frames.
     w.noninteractive.bg_fill = r.surface;
@@ -359,7 +397,8 @@ pub fn button(ui: &mut egui::Ui, kind: ButtonKind, icon: Option<egui_material_ic
         } else {
             job.append(label, 0.0, centred(font, fg));
         }
-        ui.add(egui::Button::new(job).corner_radius(20).min_size(egui::vec2(64.0, 40.0)).wrap_mode(egui::TextWrapMode::Extend))
+        let height = density(ui.ctx()).button_height();
+        ui.add(egui::Button::new(job).corner_radius((height / 2.0) as u8).min_size(egui::vec2(64.0, height)).wrap_mode(egui::TextWrapMode::Extend))
     })
     .inner
 }
@@ -408,7 +447,8 @@ pub fn chip(ui: &mut egui::Ui, selected: bool, icon: Option<egui_material_icons:
         } else {
             job.append(label, 0.0, centred(font, fg));
         }
-        ui.add(egui::Button::new(job).corner_radius(20).min_size(egui::vec2(64.0, 40.0)).wrap_mode(egui::TextWrapMode::Extend))
+        let height = density(ui.ctx()).button_height();
+        ui.add(egui::Button::new(job).corner_radius((height / 2.0) as u8).min_size(egui::vec2(64.0, height)).wrap_mode(egui::TextWrapMode::Extend))
     })
     .inner
 }
@@ -655,7 +695,14 @@ mod tests {
             assert!(pair[0].row_height() < pair[1].row_height());
             assert!(pair[0].font_scale() < pair[1].font_scale());
             assert!(pair[0].item_gap() < pair[1].item_gap());
+            assert!(pair[0].button_height() < pair[1].button_height());
+            assert!(pair[0].bar_height() < pair[1].bar_height());
         }
         assert_eq!((Density::Default.row_height(), Density::Default.font_scale()), (40.0, 1.0), "default is unchanged");
+        assert_eq!((Density::Default.button_height(), Density::Default.bar_height()), (40.0, 48.0), "default bars are unchanged");
+        // Buttons are never taller than the bar they sit in.
+        for d in Density::ALL {
+            assert!(d.button_height() < d.bar_height());
+        }
     }
 }

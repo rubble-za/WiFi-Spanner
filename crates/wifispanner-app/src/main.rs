@@ -5,6 +5,7 @@
 
 mod floor;
 mod launcher;
+mod pen;
 mod live;
 mod pdf;
 mod projects;
@@ -46,16 +47,8 @@ const SPLASH_MIN: Duration = Duration::from_millis(1800);
 const REPO_URL: &str = "https://github.com/rubble-za/WiFi-Spanner";
 const TAGLINE: &str = "Your one-stop WiFi Scanner and Planner";
 
-/// Height of the top bar, about twice egui's default for easier touch use.
-const BAR_ROW_HEIGHT: f32 = 48.0;
 /// How long a snackbar message stays.
 const TOAST_FOR: Duration = Duration::from_secs(5);
-
-/// Whether to run through X11: the setting is on and an X server (XWayland)
-/// is reachable. Without one the app stays on Wayland.
-fn use_x11(settings: &Settings) -> bool {
-    settings.x11_mode && std::env::var_os("DISPLAY").is_some()
-}
 
 fn main() -> eframe::Result {
     // The window opens at its final size, so the desktop places it on screen
@@ -65,13 +58,6 @@ fn main() -> eframe::Result {
     let saved = Settings::load();
     let start = start_size(saved.window_size);
     let options = eframe::NativeOptions {
-        // Pen input needs X11 (XWayland); winit has no Wayland tablet support.
-        event_loop_builder: use_x11(&saved).then(|| -> eframe::EventLoopBuilderHook {
-            Box::new(|builder| {
-                use winit::platform::x11::EventLoopBuilderExtX11;
-                builder.with_x11();
-            })
-        }),
         viewport: egui::ViewportBuilder::default()
             .with_inner_size(start)
             .with_decorations(false)
@@ -252,8 +238,10 @@ struct App {
     launcher_prompt: bool,
     launcher_message: String,
     window: WindowSizing,
-    /// Whether this run uses X11, to tell when the setting needs a restart.
-    started_x11: bool,
+    /// Pen events from the Wayland tablet protocol, and where the pen was last.
+    pen_rx: Option<std::sync::mpsc::Receiver<pen::PenEvent>>,
+    pen_started: bool,
+    pen_pos: egui::Pos2,
     /// A short message shown as a snackbar, and when it appeared.
     toast: Option<(String, std::time::Instant)>,
     settings_section: settings_ui::Section,
@@ -269,7 +257,6 @@ impl App {
     fn new(ctx: egui::Context) -> Self {
         let ctx_for_logo = ctx.clone();
         let settings = Settings::load();
-        let started_x11 = use_x11(&settings);
         theme::install(&ctx, settings.theme_mode, settings.density);
         let cards = list_cards().unwrap_or_default();
         let dwell = Arc::new(AtomicU64::new(settings.dwell_secs));
@@ -300,7 +287,9 @@ impl App {
             launcher_prompt: false,
             launcher_message: String::new(),
             window: WindowSizing::default(),
-            started_x11,
+            pen_rx: None,
+            pen_started: false,
+            pen_pos: egui::Pos2::ZERO,
             toast: None,
             settings_section: settings_ui::Section::default(),
             logo: logo_texture(&ctx_for_logo),
@@ -815,7 +804,6 @@ impl App {
             installed: launcher::is_installed(),
             message: self.launcher_message.clone(),
             request: None,
-            restart_for_x11: self.settings.x11_mode != self.started_x11,
         };
         if settings_ui::show(ctx, &mut open, &mut self.settings_section, &mut self.settings, &self.cards, &mut launcher) {
             theme::set_mode(ctx, self.settings.theme_mode);
@@ -840,6 +828,14 @@ impl App {
 }
 
 impl eframe::App for App {
+    /// Feed pen events into egui as pointer events.
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        let Some(rx) = &self.pen_rx else { return };
+        let events: Vec<_> = rx.try_iter().collect();
+        let modifiers = ctx.input(|i| i.modifiers);
+        raw_input.events.extend(pen::to_egui(events, &mut self.pen_pos, modifiers));
+    }
+
     /// Fully clear while the splash is up, so its rounded corners are see-through;
     /// egui's usual dark clear colour afterwards.
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
@@ -850,7 +846,11 @@ impl eframe::App for App {
         }
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        if !self.pen_started {
+            self.pen_started = true;
+            self.pen_rx = pen::start(frame, ui.ctx().clone());
+        }
         self.drain();
         self.drain_update();
         self.drain_install(ui.ctx());
@@ -889,13 +889,14 @@ impl eframe::App for App {
         let roles = theme::roles(ui.ctx());
         let bar_frame = egui::Frame::new().fill(roles.surface_container).inner_margin(egui::Margin::symmetric(12, 4));
         egui::Panel::top("status").frame(bar_frame).show(ui, |ui| {
-            ui.spacing_mut().interact_size.y = BAR_ROW_HEIGHT;
+            let bar_h = theme::density(ui.ctx()).bar_height();
+            ui.spacing_mut().interact_size.y = bar_h;
             ui.spacing_mut().button_padding = egui::vec2(14.0, 10.0);
             ui.spacing_mut().item_spacing.x = 12.0;
             ui.horizontal(|ui| {
                 let row = ui.available_rect_before_wrap();
                 if let Some(logo) = &self.logo {
-                    ui.add(egui::Image::new(logo).fit_to_exact_size(egui::Vec2::splat(BAR_ROW_HEIGHT - 14.0)));
+                    ui.add(egui::Image::new(logo).fit_to_exact_size(egui::Vec2::splat(bar_h - 14.0)));
                 }
                 ui.label(egui::RichText::new("WiFi Spanner").heading());
                 // Tabs are centred on the bar; their width comes from the last
@@ -903,14 +904,14 @@ impl eframe::App for App {
                 let left = (row.center().x - self.tabs_width / 2.0).max(ui.cursor().min.x + 12.0);
                 let rect = egui::Rect::from_min_size(
                     egui::pos2(left, row.top()),
-                    egui::vec2(self.tabs_width + 8.0, BAR_ROW_HEIGHT),
+                    egui::vec2(self.tabs_width + 8.0, bar_h),
                 );
                 let layout = egui::Layout::left_to_right(egui::Align::Center);
                 let used = ui
                     .scope_builder(egui::UiBuilder::new().max_rect(rect).layout(layout), |ui| {
                         let mut tab = self.tab;
                         for (t, name) in [(Tab::Live, "Live analysis"), (Tab::Floor, "Floor plan survey"), (Tab::Projects, "Projects")] {
-                            if theme::tab(ui, tab == t, name, BAR_ROW_HEIGHT).clicked() {
+                            if theme::tab(ui, tab == t, name, bar_h).clicked() {
                                 tab = t;
                             }
                         }
@@ -923,7 +924,7 @@ impl eframe::App for App {
                     ui.ctx().request_repaint();
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let button = hamburger_button(ui);
+                    let button = hamburger_button(ui, bar_h);
                     egui::Popup::menu(&button).show(|ui| self.main_menu(ui, &mut action));
                 });
             });
@@ -1022,8 +1023,8 @@ enum MenuAction {
 
 /// An icon button with three bars, drawn with the painter, that shows a
 /// Material state layer (a soft circle) on hover and press.
-fn hamburger_button(ui: &mut egui::Ui) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(egui::Vec2::splat(BAR_ROW_HEIGHT - 6.0), egui::Sense::click());
+fn hamburger_button(ui: &mut egui::Ui, bar_h: f32) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::Vec2::splat(bar_h - 6.0), egui::Sense::click());
     let roles = theme::roles(ui.ctx());
     let painter = ui.painter();
     if resp.hovered() || resp.is_pointer_button_down_on() {

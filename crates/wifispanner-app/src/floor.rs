@@ -347,6 +347,8 @@ impl FloorTab {
 
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        // Fields in the bars are as tall as the buttons for the chosen density.
+        ui.spacing_mut().interact_size.y = theme::density(&ctx).button_height();
         ui.horizontal_wrapped(|ui| {
             if theme::button(ui, ButtonKind::Tonal, Some(ICON_IMAGE), "Open floor plan").clicked() {
                 self.pick_plan(&ctx);

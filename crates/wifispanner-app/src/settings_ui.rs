@@ -34,8 +34,6 @@ pub struct LauncherView {
     pub installed: bool,
     pub message: String,
     pub request: Option<bool>,
-    /// The X11 mode setting differs from how the app was started.
-    pub restart_for_x11: bool,
 }
 
 /// Show the dialog while `open`. Returns true if any setting changed.
@@ -127,16 +125,6 @@ fn general(ui: &mut egui::Ui, s: &mut Settings, launcher: &mut LauncherView) {
     }
     if !launcher.message.is_empty() {
         ui.weak(&launcher.message);
-    }
-    ui.add_space(14.0);
-    ui.label(crate::theme::medium("Pen and tablet input"));
-    crate::theme::switch_row(ui, &mut s.x11_mode, "Pen support (X11 compatibility mode)");
-    ui.weak(
-        "On Wayland, pens and graphics tablets are not delivered to this app. X11 compatibility mode runs it \
-         through XWayland, where a pen works like a mouse. Text can look slightly softer on a scaled screen.",
-    );
-    if launcher.restart_for_x11 {
-        ui.colored_label(crate::theme::roles(ui.ctx()).primary, "Restart WiFi Spanner to apply this.");
     }
 }
 
