@@ -557,6 +557,8 @@ pub fn page_frame(ctx: &egui::Context) -> egui::Frame {
 /// Returns what the content returned while it is open.
 pub fn dialog<R>(ctx: &egui::Context, title: &str, width: f32, add: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<Option<R>> {
     let r = roles(ctx);
+    // Never wider than the window it sits in.
+    let width = width.min((ctx.content_rect().width() - 80.0).max(280.0));
     let frame = egui::Frame::new()
         .fill(r.surface_container_high)
         .corner_radius(28)

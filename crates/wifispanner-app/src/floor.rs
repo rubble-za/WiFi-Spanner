@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 rubble-za. See the LICENSE and NOTICE files.
 
-//! Floor plan survey tab: import a plan, calibrate its scale, click spots to
+//! The Surveying workspace: import a plan, calibrate its scale, click spots to
 //! scan, and view the measurements as a heatmap.
 
 use std::path::PathBuf;
@@ -14,7 +14,7 @@ use wifispanner_scan::{Band, ScanResult};
 
 use crate::settings::Settings;
 use crate::theme::{self, ButtonKind};
-use egui_material_icons::icons::{ICON_DELETE, ICON_DESCRIPTION, ICON_FOLDER_OPEN, ICON_IMAGE, ICON_PLACE, ICON_SAVE, ICON_STRAIGHTEN};
+use egui_material_icons::icons::{ICON_ARROW_BACK, ICON_DELETE, ICON_DESCRIPTION, ICON_FOLDER_OPEN, ICON_IMAGE, ICON_PLACE, ICON_SAVE, ICON_STRAIGHTEN};
 use crate::{Cmd, pdf, report, store};
 use crate::live::signal_color;
 
@@ -36,7 +36,12 @@ enum Tool {
 const MAX_TEXTURE_SIDE: u32 = 4096;
 /// Preview size when choosing a PDF page: render side and button size.
 const THUMB_SIDE_PX: f32 = 360.0;
-const THUMB_CELL: f32 = 170.0;
+const THUMB_CELL: f32 = 150.0;
+/// The page picker shows this many pages per row, then scrolls.
+const PICKER_COLUMNS: usize = 4;
+const PICKER_GAP: f32 = 10.0;
+/// Four cells, three gaps and room for the scroll bar.
+const PICKER_W: f32 = 4.0 * THUMB_CELL + 3.0 * PICKER_GAP + 34.0;
 /// Heatmap grid resolution along the longer side.
 const HEAT_CELLS: usize = 256;
 /// The two points used to set the scale must be at least this far apart (plan
@@ -82,6 +87,10 @@ pub struct FloorTab {
     status: String,
     /// The last status shown as a snackbar, to spot changes.
     toasted: String,
+    /// A project was just loaded, so the app should show the workspace.
+    opened: bool,
+    /// The user asked to go back to the project gallery.
+    back: bool,
     /// Display settings from the settings dialog, copied in each frame.
     view: Settings,
     pdf_picker: Option<PdfPicker>,
@@ -119,6 +128,8 @@ impl Default for FloorTab {
             heat_dirty: true,
             status: "Open a floor plan image to begin.".into(),
             toasted: "Open a floor plan image to begin.".into(),
+            opened: false,
+            back: false,
             view: Settings::default(),
             pdf_picker: None,
         }
@@ -135,6 +146,16 @@ impl FloorTab {
         self.selected = Some(p.floor.points.len() - 1);
         self.heat_dirty = true;
         self.autosave();
+    }
+
+    /// True once after a project was loaded.
+    pub fn take_opened(&mut self) -> bool {
+        std::mem::take(&mut self.opened)
+    }
+
+    /// True once after the user pressed the back button.
+    pub fn take_back(&mut self) -> bool {
+        std::mem::take(&mut self.back)
     }
 
     /// A new status message since the last call, for a snackbar.
@@ -234,34 +255,39 @@ impl FloorTab {
         }
         let count = picker.thumbs.len();
         let (mut import, mut cancel) = (false, false);
-        theme::dialog(ctx, "Choose a page to import", 720.0, |ui| {
+        theme::dialog(ctx, "Choose a page to import", PICKER_W, |ui| {
             ui.label(format!("{} has {count} pages. Click a page, then Import (or double-click it).", picker.name));
             let loaded = picker.thumbs.iter().filter(|t| t.is_some()).count();
             if loaded < count {
                 ui.weak(format!("Rendering previews... {loaded} of {count}"));
             }
             ui.add_space(8.0);
-            egui::ScrollArea::vertical().max_height(360.0).auto_shrink([false, true]).show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    for i in 0..count {
-                        ui.vertical(|ui| {
-                            let selected = picker.selected == i;
-                            let size = Vec2::splat(THUMB_CELL);
-                            let resp = match &picker.thumbs[i] {
-                                Some(t) => ui.add(egui::Button::image(egui::Image::new(t).max_size(size)).selected(selected)),
-                                None => ui.add_sized(size, egui::Button::new("Loading...").selected(selected)),
-                            };
-                            ui.label(format!("Page {}", i + 1));
-                            if resp.clicked() {
-                                picker.selected = i;
-                            }
-                            if resp.double_clicked() {
-                                picker.selected = i;
-                                import = true;
-                            }
-                        });
-                    }
-                });
+            // Four pages across, then a list that scrolls up and down, however many pages there are.
+            let height = (ctx.content_rect().height() - 320.0).clamp(180.0, 520.0);
+            egui::ScrollArea::vertical().max_height(height).auto_shrink([false, true]).show(ui, |ui| {
+                ui.spacing_mut().item_spacing = Vec2::splat(PICKER_GAP);
+                for first in (0..count).step_by(PICKER_COLUMNS) {
+                    ui.horizontal(|ui| {
+                        for i in first..(first + PICKER_COLUMNS).min(count) {
+                            ui.vertical(|ui| {
+                                let selected = picker.selected == i;
+                                let size = Vec2::splat(THUMB_CELL);
+                                let resp = match &picker.thumbs[i] {
+                                    Some(t) => ui.add(egui::Button::image(egui::Image::new(t).max_size(size)).selected(selected).min_size(size)),
+                                    None => ui.add_sized(size, egui::Button::new("Loading...").selected(selected)),
+                                };
+                                ui.label(format!("Page {}", i + 1));
+                                if resp.clicked() {
+                                    picker.selected = i;
+                                }
+                                if resp.double_clicked() {
+                                    picker.selected = i;
+                                    import = true;
+                                }
+                            });
+                        }
+                    });
+                }
             });
             theme::actions(ui, |ui| {
                 if theme::button(ui, ButtonKind::Filled, None, &format!("Import page {}", picker.selected + 1)).clicked() {
@@ -292,6 +318,7 @@ impl FloorTab {
     }
 
     fn set_project(&mut self, ctx: &egui::Context, project: Project, path: Option<PathBuf>) {
+        self.opened = true;
         self.texture = decode_texture(ctx, &project.floor.image, "floor-plan");
         self.project = Some(project);
         self.path = path;
@@ -317,8 +344,13 @@ impl FloorTab {
         egui::Panel::top("floor_tools").frame(tools).show(ui, |ui| self.toolbar(ui));
         egui::Panel::right("floor_points").default_size(320.0).frame(side).show(ui, |ui| self.side_panel(ui));
         egui::CentralPanel::default().frame(canvas).show(ui, |ui| self.canvas(ui, env));
-        self.scale_dialog(ui.ctx());
-        self.pdf_dialog(ui.ctx());
+        self.show_dialogs(ui.ctx());
+    }
+
+    /// The scale and PDF page dialogs, shown whichever view is up.
+    pub fn show_dialogs(&mut self, ctx: &egui::Context) {
+        self.scale_dialog(ctx);
+        self.pdf_dialog(ctx);
     }
 
     /// Ask for a floor plan file (PNG, JPG or PDF) and load it.
@@ -350,6 +382,10 @@ impl FloorTab {
         // Fields in the bars are as tall as the buttons for the chosen density.
         ui.spacing_mut().interact_size.y = theme::density(&ctx).button_height();
         ui.horizontal_wrapped(|ui| {
+            if theme::button(ui, ButtonKind::Text, Some(ICON_ARROW_BACK), "Projects").clicked() {
+                self.back = true;
+            }
+            ui.separator();
             if theme::button(ui, ButtonKind::Tonal, Some(ICON_IMAGE), "Open floor plan").clicked() {
                 self.pick_plan(&ctx);
             }

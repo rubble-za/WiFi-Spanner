@@ -4,11 +4,11 @@
 //! WiFi Spanner desktop app: a live network analyser and a floor plan survey.
 
 mod floor;
+mod gallery;
 mod launcher;
 mod pen;
 mod live;
 mod pdf;
-mod projects;
 mod report;
 mod settings;
 mod settings_ui;
@@ -204,9 +204,10 @@ struct WindowSizing {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
-    Live,
-    Floor,
-    Projects,
+    /// Live network analysis.
+    Scanning,
+    /// Project gallery and the floor plan survey workspace.
+    Surveying,
 }
 
 struct App {
@@ -218,7 +219,9 @@ struct App {
     error: Option<String>,
     latest: Option<ScanResult>,
     floor: floor::FloorTab,
-    projects: projects::ProjectsTab,
+    gallery: gallery::Gallery,
+    /// On the Surveying tab: the project gallery (true) or a project's workspace.
+    surveying_gallery: bool,
     settings: Settings,
     cards: Vec<WifiCard>,
     settings_open: bool,
@@ -265,13 +268,14 @@ impl App {
         App {
             rx,
             worker,
-            tab: Tab::Live,
+            tab: Tab::Scanning,
             scanner_name: "starting...".into(),
             scans_so_far: 0,
             error: None,
             latest: None,
             floor: floor::FloorTab::default(),
-            projects: projects::ProjectsTab::default(),
+            gallery: gallery::Gallery::default(),
+            surveying_gallery: true,
             settings,
             cards,
             settings_open: false,
@@ -625,9 +629,8 @@ impl App {
     /// Show messages from the tabs as a snackbar for a few seconds.
     fn toast_tick(&mut self, ctx: &egui::Context) {
         let new = match self.tab {
-            Tab::Floor => self.floor.take_toast(),
-            Tab::Projects => self.projects.take_toast(),
-            Tab::Live => None,
+            Tab::Surveying => self.floor.take_toast().or_else(|| self.gallery.take_toast()),
+            Tab::Scanning => None,
         };
         if let Some(text) = new {
             self.toast = Some((text, std::time::Instant::now()));
@@ -819,10 +822,10 @@ impl App {
     fn set_tab(&mut self, tab: Tab) {
         if self.tab != tab {
             self.tab = tab;
-            if tab == Tab::Projects {
-                self.projects.refresh();
+            if tab == Tab::Surveying {
+                self.gallery.mark_stale();
             }
-            let _ = self.worker.tx.send(Cmd::Live(tab == Tab::Live));
+            let _ = self.worker.tx.send(Cmd::Live(tab == Tab::Scanning));
         }
     }
 }
@@ -910,7 +913,7 @@ impl eframe::App for App {
                 let used = ui
                     .scope_builder(egui::UiBuilder::new().max_rect(rect).layout(layout), |ui| {
                         let mut tab = self.tab;
-                        for (t, name) in [(Tab::Live, "Live analysis"), (Tab::Floor, "Floor plan survey"), (Tab::Projects, "Projects")] {
+                        for (t, name) in [(Tab::Scanning, "Scanning"), (Tab::Surveying, "Surveying")] {
                             if theme::tab(ui, tab == t, name, bar_h).clicked() {
                                 tab = t;
                             }
@@ -931,11 +934,11 @@ impl eframe::App for App {
         });
         match action {
             Some(MenuAction::OpenPlan) => {
-                self.set_tab(Tab::Floor);
+                self.set_tab(Tab::Surveying);
                 self.floor.pick_plan(ui.ctx());
             }
             Some(MenuAction::OpenProject) => {
-                self.set_tab(Tab::Floor);
+                self.set_tab(Tab::Surveying);
                 self.floor.pick_project(ui.ctx());
             }
             Some(MenuAction::ShowProjectsFolder) => {
@@ -969,7 +972,7 @@ impl eframe::App for App {
                     ui.separator();
                 }
                 ui.label(&self.scanner_name);
-                if self.tab == Tab::Live
+                if self.tab == Tab::Scanning
                     && let Some(r) = &self.latest
                 {
                     ui.separator();
@@ -991,11 +994,29 @@ impl eframe::App for App {
             });
         });
 
+        // A project opening (from the gallery, the menu or a new plan) shows its
+        // workspace; the workspace's back button returns to the gallery.
+        if self.floor.take_opened() {
+            self.surveying_gallery = false;
+        }
+        if self.floor.take_back() {
+            self.surveying_gallery = true;
+            self.gallery.mark_stale();
+        }
         match self.tab {
-            Tab::Live => {
+            Tab::Scanning => {
                 egui::CentralPanel::default().frame(theme::page_frame(ui.ctx())).show(ui, |ui| live::show(ui, self.latest.as_ref()));
             }
-            Tab::Floor => {
+            Tab::Surveying if self.surveying_gallery => {
+                match self.gallery.show(ui, &self.settings) {
+                    Some(gallery::GalleryAction::New) => self.floor.pick_plan(ui.ctx()),
+                    Some(gallery::GalleryAction::Open(path)) => self.floor.open_project(ui.ctx(), path),
+                    None => {}
+                }
+                // A multi-page PDF's page picker belongs to the workspace but opens from here.
+                self.floor.show_dialogs(ui.ctx());
+            }
+            Tab::Surveying => {
                 let env = floor::Env {
                     tx: &self.worker.tx,
                     dwell_secs: self.worker.dwell_secs.load(Ordering::Relaxed),
@@ -1003,12 +1024,6 @@ impl eframe::App for App {
                     settings: &self.settings,
                 };
                 self.floor.show(ui, &env);
-            }
-            Tab::Projects => {
-                if let Some(path) = self.projects.show(ui, &self.settings) {
-                    self.floor.open_project(ui.ctx(), path);
-                    self.set_tab(Tab::Floor);
-                }
             }
         }
     }
