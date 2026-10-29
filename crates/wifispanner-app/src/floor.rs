@@ -1554,7 +1554,7 @@ impl FloorTab {
                         }
                         ui.set_width(250.0);
                         // Long menus scroll rather than run off the window.
-                        egui::ScrollArea::vertical().max_height((room - 12.0).max(160.0)).show(ui, |ui| match self.tool {
+                        egui::ScrollArea::vertical().max_height((room - 12.0).max(if self.tool == Tool::Client { 260.0 } else { 160.0 })).show(ui, |ui| match self.tool {
                             Tool::Walls => self.walls_content(ui, floor, &mut walls_out),
                             Tool::Select => self.select_content(ui, floor, &mut walls_out, &mut aps_out),
                             Tool::Aps => {}
@@ -1725,7 +1725,43 @@ impl FloorTab {
     fn client_content(&self, ui: &mut egui::Ui, floor: &Floor, edits: &mut Vec<WallEdit>) {
         let r = theme::roles(ui.ctx());
         ui.label(theme::heading(ui, "Client Experience"));
-        ui.label(egui::RichText::new("Click or drag on the plan.").text_style(egui::TextStyle::Body).color(r.on_surface_variant)).on_hover_text("Pan with the right mouse button while the client tool is active.");
+        // What the client gets comes first, so it is in view however short the menu is.
+        match self.client {
+            None => {
+                ui.label(egui::RichText::new("Click or drag on the plan to place a client.").text_style(egui::TextStyle::Body).color(r.on_surface_variant))
+                    .on_hover_text("Pan with the right mouse button while the client tool is active.");
+            }
+            Some(_) if floor.metres_per_px.is_none() => {
+                ui.label("Set the plan's scale first, so distances are real.");
+            }
+            Some(pos) => {
+                let results = self.client_results(floor, pos);
+                let layer = floor.layer(self.mode == WorkMode::Plan);
+                let best = results.iter().filter_map(|(_, b, hit)| hit.map(|(ap, dbm)| (ap, *b, dbm))).max_by(|a, b| a.2.total_cmp(&b.2));
+                match best {
+                    Some((ap, band, dbm)) if dbm >= NO_COVERAGE_DBM => {
+                        let name = layer.get(ap).map_or("access point", |a| a.name.as_str());
+                        ui.label(egui::RichText::new(format!("Connected to {name}")).strong());
+                        ui.label(egui::RichText::new(format!("{band}, {dbm:.0} dBm, {}", rating(dbm))).color(rating_colour(dbm)));
+                    }
+                    _ => {
+                        ui.label(egui::RichText::new("No WiFi coverage").strong().color(r.error));
+                    }
+                }
+                for (_, band, hit) in results {
+                    match hit {
+                        Some((ap, dbm)) => {
+                            let name = layer.get(ap).map_or("", |a| a.name.as_str());
+                            ui.label(egui::RichText::new(format!("{band}:  {dbm:.0} dBm  ({name})")).text_style(egui::TextStyle::Body).color(rating_colour(dbm)));
+                        }
+                        None => {
+                            ui.label(egui::RichText::new(format!("{band}:  no access point")).text_style(egui::TextStyle::Body).color(r.on_surface_variant));
+                        }
+                    }
+                }
+            }
+        }
+        ui.separator();
         egui::ComboBox::from_id_salt("client_kind").selected_text(CLIENTS[self.client_kind].0).width(220.0).show_ui(ui, |ui| {
             for (i, (name, _)) in CLIENTS.iter().enumerate() {
                 if ui.selectable_label(self.client_kind == i, *name).clicked() {
@@ -1744,40 +1780,6 @@ impl FloorTab {
                 ui.label("GHz");
             });
         }
-        ui.add_space(6.0);
-        let Some(pos) = self.client else {
-            ui.label("No client placed yet.");
-            return;
-        };
-        if floor.metres_per_px.is_none() {
-            ui.label("Set the plan's scale first, so distances are real.");
-            return;
-        }
-        let results = self.client_results(floor, pos);
-        let best = results.iter().filter_map(|(_, b, hit)| hit.map(|(ap, dbm)| (ap, *b, dbm))).max_by(|a, b| a.2.total_cmp(&b.2));
-        match best {
-            Some((ap, band, dbm)) if dbm >= NO_COVERAGE_DBM => {
-                let name = floor.layer(self.mode == WorkMode::Plan).get(ap).map_or("access point", |a| a.name.as_str());
-                ui.label(egui::RichText::new(format!("Connected to {name}")).strong());
-                ui.label(egui::RichText::new(format!("{band}, {dbm:.0} dBm, {}", rating(dbm))).color(rating_colour(dbm)));
-            }
-            _ => {
-                ui.label(egui::RichText::new("No WiFi coverage").strong().color(r.error));
-            }
-        }
-        ui.add_space(6.0);
-        for (_, band, hit) in results {
-            match hit {
-                Some((ap, dbm)) => {
-                    let name = floor.layer(self.mode == WorkMode::Plan).get(ap).map_or("", |a| a.name.as_str());
-                    ui.label(egui::RichText::new(format!("{band}:  {dbm:.0} dBm  ({name})")).text_style(egui::TextStyle::Body).color(rating_colour(dbm)));
-                }
-                None => {
-                    ui.label(egui::RichText::new(format!("{band}:  no access point on this band")).text_style(egui::TextStyle::Body).color(r.on_surface_variant));
-                }
-            }
-        }
-        ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.label("Client height");
             let mut h = self.rx_height;
