@@ -208,20 +208,15 @@ enum AreaMode {
 }
 
 /// Client devices to simulate: name and the bands each can use (2.4, 5, 6 GHz).
-const CLIENTS: [(&str, [bool; 3]); 11] = [
+const CLIENTS: [(&str, [bool; 3]); 6] = [
     ("WiFi 7 Device", [true, true, true]),
-    ("WiFi 7 Phone", [true, true, true]),
     ("WiFi 6E Device", [true, true, true]),
-    ("WiFi 6E Phone", [true, true, true]),
     ("WiFi 6 Device", [true, true, false]),
-    ("WiFi 6 Phone", [true, true, false]),
     ("WiFi 5 Device", [true, true, false]),
-    ("WiFi 5 Phone", [true, true, false]),
     ("WiFi 4 Device", [true, true, false]),
-    ("WiFi 4 Phone", [true, true, false]),
     ("Custom Client", [true, true, false]),
 ];
-const CUSTOM_CLIENT: usize = 10;
+const CUSTOM_CLIENT: usize = 5;
 /// Below this a client cannot keep a connection.
 const NO_COVERAGE_DBM: f32 = -85.0;
 
