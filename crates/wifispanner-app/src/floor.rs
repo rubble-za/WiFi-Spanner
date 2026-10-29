@@ -66,6 +66,11 @@ const WALL_PICK_PX: f32 = 8.0;
 const WALL_CARVE_PX: f32 = 8.0;
 /// How many undo steps are kept.
 const WALL_HISTORY: usize = 100;
+/// The stacked-layers picture for the floors button (white on transparent, tinted when drawn).
+const LAYERS_ICON: &[u8] = include_bytes!("../assets/layers.png");
+const LAYERS_BUTTON: f32 = 44.0;
+/// How far down the right edge the bubbles start, below the floors button.
+const RIGHT_BUBBLES_TOP: f32 = 12.0 + LAYERS_BUTTON + 8.0;
 
 /// The scale (metres per plan pixel) implied by `metres` between two points
 /// `px_apart` pixels apart on a plan of `w` x `h` pixels, or why it is not
@@ -118,6 +123,9 @@ pub struct FloorTab {
     /// The next plan that loads becomes a new floor instead of a new project.
     adding_floor: bool,
     rename: Option<String>,
+    /// The floors panel is showing, and the picture on the button that opens it.
+    floors_open: bool,
+    layers_icon: Option<TextureHandle>,
     /// Wall drawing: the material and height for the next wall, where the wall
     /// being drawn started, and the wall picked in the list.
     wall_material: Material,
@@ -196,6 +204,8 @@ impl Default for FloorTab {
             floor_textures: HashMap::new(),
             adding_floor: false,
             rename: None,
+            floors_open: false,
+            layers_icon: None,
             wall_material: Material::Concrete,
             wall_height: Material::Concrete.default_height_m(),
             wall_start: None,
@@ -528,8 +538,8 @@ impl FloorTab {
         let mut edits = Vec::new();
         egui::Area::new(egui::Id::unique("floors_bubble"))
             .order(egui::Order::Foreground)
-            .pivot(egui::Align2::LEFT_TOP)
-            .fixed_pos(canvas.left_top() + Vec2::new(12.0, 12.0))
+            .pivot(egui::Align2::RIGHT_TOP)
+            .fixed_pos(canvas.right_top() + Vec2::new(-12.0, RIGHT_BUBBLES_TOP))
             .show(ctx, |ui| {
                 egui::Frame::new()
                     .fill(r.surface_container_high)
@@ -635,12 +645,8 @@ impl FloorTab {
         }
         let roles = theme::roles(ui.ctx());
         let tools = egui::Frame::new().fill(roles.surface).inner_margin(egui::Margin::symmetric(16, 10));
-        let side = egui::Frame::new().fill(roles.surface).inner_margin(16);
         let canvas = egui::Frame::new().fill(roles.surface_container_lowest);
         egui::Panel::top("floor_tools").frame(tools).show(ui, |ui| self.toolbar(ui));
-        if !matches!(self.tool, Tool::Walls | Tool::Select) {
-            egui::Panel::right("floor_points").default_size(320.0).frame(side).show(ui, |ui| self.side_panel(ui));
-        }
         egui::CentralPanel::default().frame(canvas).show(ui, |ui| self.canvas(ui, env));
         self.show_dialogs(ui.ctx());
     }
@@ -913,7 +919,7 @@ impl FloorTab {
         egui::Area::new(egui::Id::unique("wall_bubble"))
             .order(egui::Order::Foreground)
             .pivot(egui::Align2::RIGHT_TOP)
-            .fixed_pos(canvas.right_top() + Vec2::new(-12.0, 12.0))
+            .fixed_pos(canvas.right_top() + Vec2::new(-12.0 - if self.floors_open { 250.0 } else { 0.0 }, RIGHT_BUBBLES_TOP))
             .show(ctx, |ui| {
                 egui::Frame::new()
                     .fill(r.surface_container_high)
@@ -1131,58 +1137,100 @@ impl FloorTab {
                 == rfd::MessageDialogResult::Yes
     }
 
-    fn side_panel(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Survey points");
-        let Some(floor) = self.project.as_mut().map(|p| p.floor_mut()) else {
-            ui.label("No floor plan loaded.");
-            return;
-        };
-        ui.label(&self.status);
-        ui.separator();
-        let mut delete = None;
-        egui::ScrollArea::vertical().id_salt("points").max_height(ui.available_height() * 0.45).show(ui, |ui| {
-            for (i, p) in floor.points.iter().enumerate() {
-                let best = Floor::signal_at(p, &Target::Any, None);
-                let text = format!("#{}   {} APs   best {:.0} dBm", i + 1, p.observations.len(), best);
-                if ui.selectable_label(self.selected == Some(i), text).clicked() {
-                    self.selected = Some(i);
-                }
-            }
-        });
-        if let Some(i) = self.selected.filter(|&i| i < floor.points.len()) {
-            ui.separator();
-            ui.horizontal(|ui| {
-                ui.strong(format!("Point #{}", i + 1));
-                if theme::button(ui, ButtonKind::Outlined, Some(ICON_DELETE), "Delete").clicked() {
-                    delete = Some(i);
-                }
+    /// The selected survey point: what was heard there, and delete. Shown
+    /// over the left of the plan only while a point is selected.
+    fn point_bubble(&mut self, ctx: &egui::Context, canvas: Rect) {
+        let r = theme::roles(ctx);
+        let Some(i) = self.selected else { return };
+        let Some(p) = self.project.as_ref().and_then(|p| p.floor().points.get(i)) else { return };
+        let mut delete = false;
+        let mut close = false;
+        egui::Area::new(egui::Id::unique("point_bubble"))
+            .order(egui::Order::Foreground)
+            .pivot(egui::Align2::LEFT_TOP)
+            .fixed_pos(canvas.left_top() + Vec2::new(12.0, 12.0))
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(r.surface_container_high)
+                    .stroke(Stroke::new(1.0, r.outline_variant))
+                    .corner_radius(20)
+                    .inner_margin(14)
+                    .shadow(theme::shadow(r.shadow, 16, 0.18))
+                    .show(ui, |ui| {
+                        ui.set_width(300.0);
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(format!("Point #{}", i + 1)).size(16.0));
+                            ui.label(egui::RichText::new(format!("{} APs, {} s dwell", p.observations.len(), p.dwell_secs)).size(12.5).color(r.on_surface_variant));
+                        });
+                        let mut obs: Vec<_> = p.observations.iter().collect();
+                        obs.sort_by(|a, b| b.signal_dbm.total_cmp(&a.signal_dbm));
+                        egui::ScrollArea::vertical().id_salt("obs").max_height(260.0).show(ui, |ui| {
+                            egui::Grid::new("obs_grid").striped(true).spacing([10.0, 3.0]).show(ui, |ui| {
+                                for h in ["SSID", "Ch", "Band", "dBm", "Seen"] {
+                                    ui.strong(h);
+                                }
+                                ui.end_row();
+                                for o in obs {
+                                    ui.label(o.ssid.as_deref().unwrap_or("<hidden>"));
+                                    ui.label(o.channel.to_string());
+                                    ui.label(o.band().to_string());
+                                    ui.colored_label(signal_color(o.signal_dbm, ui.visuals().dark_mode), format!("{:.0}", o.signal_dbm));
+                                    ui.label(o.samples.to_string());
+                                    ui.end_row();
+                                }
+                            });
+                        });
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            if theme::button(ui, ButtonKind::Outlined, Some(ICON_DELETE), "Delete").clicked() {
+                                delete = true;
+                            }
+                            if theme::button(ui, ButtonKind::Text, None, "Close").clicked() {
+                                close = true;
+                            }
+                        });
+                    });
             });
-            let p = &floor.points[i];
-            ui.label(format!("{} s dwell", p.dwell_secs));
-            let mut obs: Vec<_> = p.observations.iter().collect();
-            obs.sort_by(|a, b| b.signal_dbm.total_cmp(&a.signal_dbm));
-            egui::ScrollArea::vertical().id_salt("obs").show(ui, |ui| {
-                egui::Grid::new("obs_grid").striped(true).spacing([10.0, 3.0]).show(ui, |ui| {
-                    for h in ["SSID", "Ch", "Band", "dBm", "Seen"] {
-                        ui.strong(h);
-                    }
-                    ui.end_row();
-                    for o in obs {
-                        ui.label(o.ssid.as_deref().unwrap_or("<hidden>"));
-                        ui.label(o.channel.to_string());
-                        ui.label(o.band().to_string());
-                        ui.colored_label(signal_color(o.signal_dbm, ui.visuals().dark_mode), format!("{:.0}", o.signal_dbm));
-                        ui.label(o.samples.to_string());
-                        ui.end_row();
-                    }
-                });
-            });
+        if close {
+            self.selected = None;
         }
-        if let Some(i) = delete {
-            floor.points.remove(i);
+        if delete {
+            if let Some(p) = self.project.as_mut() {
+                p.floor_mut().points.remove(i);
+            }
             self.selected = None;
             self.heat_dirty = true;
             self.autosave();
+        }
+    }
+
+    /// The button over the top right of the plan that opens the floors panel.
+    fn layers_button(&mut self, ctx: &egui::Context, canvas: Rect) {
+        let r = theme::roles(ctx);
+        if self.layers_icon.is_none() {
+            self.layers_icon = decode_texture(ctx, LAYERS_ICON, "layers-icon");
+        }
+        let open = self.floors_open;
+        let mut toggled = false;
+        egui::Area::new(egui::Id::unique("layers_button"))
+            .order(egui::Order::Foreground)
+            .pivot(egui::Align2::RIGHT_TOP)
+            .fixed_pos(canvas.right_top() + Vec2::new(-12.0, 12.0))
+            .show(ctx, |ui| {
+                let (rect, resp) = ui.allocate_exact_size(Vec2::splat(LAYERS_BUTTON), Sense::click());
+                let fill = if open { r.secondary_container } else { r.surface_container_high };
+                let fill = if resp.hovered() { theme::state_layer(fill, r.on_surface, 0.08) } else { fill };
+                let painter = ui.painter();
+                painter.rect(rect, LAYERS_BUTTON / 2.0, fill, Stroke::new(1.0, r.outline_variant), egui::StrokeKind::Inside);
+                if let Some(icon) = &self.layers_icon {
+                    let side = LAYERS_BUTTON * 0.5;
+                    let colour = if open { r.on_secondary_container } else { r.on_surface };
+                    painter.image(icon.id(), Rect::from_center_size(rect.center(), Vec2::splat(side)), Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), colour);
+                }
+                toggled = resp.on_hover_text("Floors").clicked();
+            });
+        if toggled {
+            self.floors_open = !self.floors_open;
         }
     }
 
@@ -1402,8 +1450,14 @@ impl FloorTab {
                 self.apply_wall_edit(edit);
             }
         }
-        for edit in self.floors_bubble(ui.ctx(), rect) {
-            self.apply_floor_edit(ui.ctx(), edit);
+        self.layers_button(ui.ctx(), rect);
+        if self.floors_open {
+            for edit in self.floors_bubble(ui.ctx(), rect) {
+                self.apply_floor_edit(ui.ctx(), edit);
+            }
+        }
+        if !matches!(self.tool, Tool::Walls | Tool::Select) {
+            self.point_bubble(ui.ctx(), rect);
         }
     }
 
