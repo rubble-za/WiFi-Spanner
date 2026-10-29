@@ -20,7 +20,7 @@ use wifispanner_scan::{Band, ScanResult};
 
 use crate::settings::Settings;
 use crate::theme::{self, ButtonKind};
-use egui_material_icons::icons::{ICON_ADD, ICON_ARCHITECTURE, ICON_ARROW_SELECTOR_TOOL, ICON_SETTINGS, ICON_CATEGORY, ICON_CROP_FREE, ICON_EDIT, ICON_ROUTER, ICON_SMARTPHONE, ICON_ARROW_BACK, ICON_OPEN_WITH, ICON_RESTART_ALT, ICON_VISIBILITY, ICON_VISIBILITY_OFF, ICON_DELETE, ICON_DESCRIPTION, ICON_FOLDER_OPEN, ICON_IMAGE, ICON_PLACE, ICON_SAVE, ICON_STRAIGHTEN, ICON_UNDO};
+use egui_material_icons::icons::{ICON_ADD, ICON_ARCHITECTURE, ICON_ARROW_SELECTOR_TOOL, ICON_CATEGORY, ICON_CROP_FREE, ICON_EDIT, ICON_ROUTER, ICON_SMARTPHONE, ICON_ARROW_BACK, ICON_OPEN_WITH, ICON_RESTART_ALT, ICON_VISIBILITY, ICON_VISIBILITY_OFF, ICON_DELETE, ICON_DESCRIPTION, ICON_FOLDER_OPEN, ICON_IMAGE, ICON_PLACE, ICON_SAVE, ICON_STRAIGHTEN, ICON_UNDO};
 use crate::{Cmd, pdf, report, store};
 use crate::live::signal_color;
 
@@ -891,10 +891,11 @@ impl FloorTab {
         ui.spacing_mut().interact_size.y = theme::density(&ctx).button_height();
         let (tool, survey, enabled) = (self.tool, self.mode == WorkMode::Survey, self.project.is_some());
         let (mut back, mut picked) = (false, None);
-        egui::Sides::new().show(
-            ui,
-            |ui| {
-                // A narrow window scrolls the tools rather than running them under the cog.
+        let size = theme::density(&ctx).button_height();
+        ui.horizontal(|ui| {
+            // The tools get the width left after the button, and scroll when it is short.
+            let room = (ui.available_width() - size - ui.spacing().item_spacing.x).max(100.0);
+            ui.allocate_ui_with_layout(egui::vec2(room, size), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 egui::ScrollArea::horizontal().auto_shrink([false, true]).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
                     ui.horizontal(|ui| {
                         back = theme::button(ui, ButtonKind::Text, Some(ICON_ARROW_BACK), "Projects").clicked();
@@ -902,9 +903,9 @@ impl FloorTab {
                         picked = Self::tool_chips(ui, tool, survey, enabled);
                     });
                 });
-            },
-            |ui| self.settings_button(ui, &ctx),
-        );
+            });
+            self.settings_button(ui, &ctx);
+        });
         if back {
             self.back = true;
         }
@@ -916,13 +917,23 @@ impl FloorTab {
         }
     }
 
-    /// The cog at the right of the bar and the menu it opens: the project's
-    /// file actions and the view controls.
+    /// The button at the right of the bar, three dots in a triangle, and the
+    /// menu it opens: the project's file actions and the view controls.
     fn settings_button(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let r = theme::roles(ctx);
         let size = theme::density(ctx).button_height();
-        let text = egui::RichText::new(ICON_SETTINGS.codepoint).font(egui::FontId::new(22.0, ICON_SETTINGS.font_family())).color(r.on_surface);
-        let button = ui.add_sized([size, size], egui::Button::new(text).corner_radius(size / 2.0)).on_hover_text("Project and view settings");
+        let (rect, button) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
+        let open = egui::Popup::is_id_open(ctx, button.id.with("popup")) || button.is_pointer_button_down_on();
+        if open || button.hovered() {
+            let opacity = if open { 0.12 } else { 0.08 };
+            ui.painter().circle_filled(rect.center(), size / 2.0, theme::state_layer(Color32::TRANSPARENT, r.on_surface, opacity));
+        }
+        // One dot above two, evenly round the centre.
+        let (c, spread) = (rect.center(), size * 0.17);
+        for offset in [Vec2::new(0.0, -spread * 1.05), Vec2::new(-spread * 1.1, spread * 0.8), Vec2::new(spread * 1.1, spread * 0.8)] {
+            ui.painter().circle_filled(c + offset, size * 0.065, r.on_surface);
+        }
+        let button = button.on_hover_text("Project and view settings");
         egui::Popup::menu(&button).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| self.settings_menu(ui, ctx));
     }
 
@@ -963,11 +974,21 @@ impl FloorTab {
         }
         ui.separator();
         ui.label(egui::RichText::new(if self.mode == WorkMode::Survey { "Heatmap" } else { "Predicted coverage" }).size(13.0).color(r.on_surface_variant));
-        if self.mode == WorkMode::Survey {
-            self.heat_controls(ui);
-        } else {
-            self.plan_controls(ui);
-        }
+        // Fields that can be edited get an outline, so they read as fields and not as labels.
+        ui.scope(|ui| {
+            let w = &mut ui.visuals_mut().widgets;
+            let outline = Stroke::new(1.0, r.outline);
+            w.inactive.bg_stroke = outline;
+            w.inactive.weak_bg_fill = r.surface_container_highest;
+            w.inactive.bg_fill = r.surface_container_highest;
+            w.hovered.bg_stroke = Stroke::new(1.5, r.primary);
+            w.active.bg_stroke = Stroke::new(1.5, r.primary);
+            if self.mode == WorkMode::Survey {
+                self.heat_controls(ui);
+            } else {
+                self.plan_controls(ui);
+            }
+        });
     }
 
     /// The measured heatmap's controls.

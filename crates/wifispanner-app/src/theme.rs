@@ -393,6 +393,14 @@ const TEXT_NUDGE: f32 = 0.8;
 
 /// Draw a pill: a rounded background with an optional leading icon and a
 /// label, both centred. Greys out when the `Ui` is disabled.
+/// Where, from the top of the galley, the ink of its first glyph is centred
+/// vertically, when known.
+fn ink_centre_y(g: &egui::Galley) -> Option<f32> {
+    let row = g.rows.first()?;
+    let glyph = row.row.glyphs.first()?;
+    Some(row.pos.y + glyph.pos.y + glyph.uv_rect.offset.y + glyph.uv_rect.size.y / 2.0)
+}
+
 fn pill(ui: &mut egui::Ui, style: PillStyle, icon: Option<egui_material_icons::MaterialIcon>, label: &str) -> egui::Response {
     let r = roles(ui.ctx());
     let height = density(ui.ctx()).button_height();
@@ -420,7 +428,9 @@ fn pill(ui: &mut egui::Ui, style: PillStyle, icon: Option<egui_material_icons::M
     let mut x = rect.center().x - content_w / 2.0;
     if let Some(g) = icon_galley {
         let w = g.size().x;
-        painter.galley(egui::pos2(x, rect.center().y - g.size().y / 2.0 + ICON_NUDGE), g, style.fg);
+        // Icons differ in how far up the em box they sit, so each is centred on its own ink.
+        let ink = ink_centre_y(&g).unwrap_or(g.size().y / 2.0 - ICON_NUDGE);
+        painter.galley(egui::pos2(x, rect.center().y - ink), g, style.fg);
         x += w + gap;
     }
     painter.galley(egui::pos2(x, rect.center().y - text.size().y / 2.0 + TEXT_NUDGE), text, style.fg);
