@@ -636,13 +636,23 @@ impl App {
             self.toast = Some((text, std::time::Instant::now()));
         }
         let Some((text, at)) = &self.toast else { return };
-        if at.elapsed() >= TOAST_FOR {
+        let age = at.elapsed().as_secs_f32();
+        let carbon = theme::skin(ctx) == theme::Skin::Carbon;
+        let life = TOAST_FOR.as_secs_f32() + if carbon { theme::TOAST_SLIDE } else { 0.0 };
+        if age >= life {
             self.toast = None;
             return;
         }
-        ctx.request_repaint_after(Duration::from_millis(250));
-        if theme::snackbar(ctx, text) {
-            self.toast = None;
+        let sliding = age < theme::TOAST_SLIDE || age > TOAST_FOR.as_secs_f32();
+        ctx.request_repaint_after(Duration::from_millis(if sliding { 16 } else { 250 }));
+        if theme::snackbar(ctx, text, age, TOAST_FOR.as_secs_f32()) {
+            // Dismissed: Carbon slides out first, Material just goes.
+            let leave = TOAST_FOR.as_secs_f32();
+            if carbon && age < leave {
+                self.toast = self.toast.take().map(|(t, _)| (t, std::time::Instant::now() - Duration::from_secs_f32(leave)));
+            } else if !carbon {
+                self.toast = None;
+            }
         }
     }
 

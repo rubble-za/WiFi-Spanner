@@ -1043,9 +1043,9 @@ pub fn icon_label(ui: &egui::Ui, icon: Option<egui_material_icons::MaterialIcon>
 
 /// A Material snackbar: a short message near the bottom of the window.
 /// Returns true when the user clicks it away.
-pub fn snackbar(ctx: &egui::Context, text: &str) -> bool {
+pub fn snackbar(ctx: &egui::Context, text: &str, age: f32, hold: f32) -> bool {
     if skin(ctx) == Skin::Carbon {
-        return toast(ctx, text);
+        return toast(ctx, text, age, hold);
     }
     let r = roles(ctx);
     egui::Area::new(egui::Id::unique("snackbar"))
@@ -1066,6 +1066,9 @@ pub fn snackbar(ctx: &egui::Context, text: &str) -> bool {
         .inner
 }
 
+/// How long Carbon's toast takes to slide in or out, in seconds.
+pub const TOAST_SLIDE: f32 = 0.3;
+
 /// What a message is about, for the colour of Carbon's toast: guessed from its wording.
 fn toast_kind(text: &str) -> (&'static str, Color32) {
     let lower = text.to_lowercase();
@@ -1078,13 +1081,16 @@ fn toast_kind(text: &str) -> (&'static str, Color32) {
     }
 }
 
-/// Carbon's toast notification: top right, an inverse-coloured box with a 3 px bar in the
+/// Carbon's toast notification: bottom right, an inverse-coloured box with a 3 px bar in the
 /// colour of its kind, a title, the message and a close button. Returns true when dismissed.
-fn toast(ctx: &egui::Context, text: &str) -> bool {
+fn toast(ctx: &egui::Context, text: &str, age: f32, hold: f32) -> bool {
+    // Slides in from the right, waits, slides back out.
+    let t = if age < hold { (age / TOAST_SLIDE).min(1.0) } else { 1.0 - ((age - hold) / TOAST_SLIDE).min(1.0) };
+    let shift = (1.0 - t).powi(3) * 340.0;
     let r = roles(ctx);
     let (title, accent) = toast_kind(text);
     egui::Area::new(egui::Id::unique("toast"))
-        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-16.0, 64.0))
+        .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16.0 + shift, -40.0))
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             let frame = egui::Frame::new()
