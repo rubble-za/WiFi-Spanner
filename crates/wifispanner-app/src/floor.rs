@@ -92,9 +92,11 @@ fn round_size(ctx: &egui::Context) -> f32 {
     theme::density(ctx).button_height() + 4.0
 }
 
-/// How far down the right edge the menus start, below the two round buttons.
-fn right_top(ctx: &egui::Context) -> f32 {
-    12.0 + 2.0 * round_size(ctx) + 16.0
+/// How far down the right edge the menus start, below the round buttons: the floors button,
+/// and in Planning the devices button as well.
+fn right_top(ctx: &egui::Context, planning: bool) -> f32 {
+    let buttons = if planning { 2.0 } else { 1.0 };
+    12.0 + buttons * round_size(ctx) + 8.0 * buttons
 }
 
 /// The scale (metres per plan pixel) implied by `metres` between two points
@@ -708,7 +710,7 @@ impl FloorTab {
         egui::Area::new(egui::Id::unique("floors_bubble"))
             .order(egui::Order::Foreground)
             .pivot(egui::Align2::RIGHT_TOP)
-            .fixed_pos(canvas.right_top() + Vec2::new(-12.0, right_top(ctx)))
+            .fixed_pos(canvas.right_top() + Vec2::new(-12.0, right_top(ctx, self.mode == WorkMode::Plan)))
             .show(ctx, |ui| {
                 egui::Frame::new()
                     .fill(r.surface_container_high)
@@ -918,7 +920,7 @@ impl FloorTab {
         }
         if let Some(t) = picked {
             self.set_tool(t);
-            if t == Tool::Aps {
+            if t == Tool::Aps && !survey {
                 self.devices_open = true;
             }
         }
@@ -1069,7 +1071,7 @@ impl FloorTab {
             (Tool::Survey, ICON_PLACE, if survey { "Survey" } else { "Survey data" }),
             (Tool::Walls, ICON_ARCHITECTURE, "Walls"),
             (Tool::Obstacles, ICON_CATEGORY, "Obstacles"),
-            (Tool::Aps, ICON_ROUTER, "Devices"),
+            (Tool::Aps, ICON_ROUTER, if survey { "Plot AP" } else { "Devices" }),
             (Tool::Client, ICON_SMARTPHONE, "Client"),
             (Tool::Scale, ICON_STRAIGHTEN, "Scale"),
         ];
@@ -1214,7 +1216,7 @@ impl FloorTab {
                         _ => {}
                     }
                 }
-                if let Some(&i) = selected.last() {
+                if let Some(&i) = selected.last().filter(|_| planning) {
                     let t = &fl.layer(planning)[i];
                     self.ap_template = PlannedAp { name: String::new(), x: 0.0, y: 0.0, existing: false, link: None, ..t.clone() };
                 }
@@ -1552,7 +1554,7 @@ impl FloorTab {
         if !matches!(self.tool, Tool::Walls | Tool::Select | Tool::Aps | Tool::Obstacles | Tool::Client) {
             return (walls_out, aps_out);
         }
-        if self.tool == Tool::Aps && !self.devices_open {
+        if self.tool == Tool::Aps && (self.mode == WorkMode::Survey || !self.devices_open) {
             return (walls_out, aps_out);
         }
         let Some(floor) = self.project.as_ref().map(|p| p.floor()) else { return (walls_out, aps_out) };
@@ -1561,7 +1563,7 @@ impl FloorTab {
         // from the last frame decides, as it is only known once it has been drawn.
         let height_id = egui::Id::unique("right_panel_height");
         let last_height = ctx.data(|d| d.get_temp::<f32>(height_id)).unwrap_or(0.0);
-        let default_top = canvas.top() + right_top(ctx);
+        let default_top = canvas.top() + right_top(ctx, self.mode == WorkMode::Plan);
         let top = if last_height > 0.0 { default_top.min(ctx.content_rect().bottom() - 24.0 - last_height).max(canvas.top() + 8.0) } else { default_top };
         let x = canvas.right() - 12.0 - if self.floors_open { 250.0 } else { 0.0 };
         let shown = egui::Area::new(egui::Id::unique("right_panel"))
@@ -1879,6 +1881,42 @@ impl FloorTab {
                 edits.push(ApEdit::Name(name));
             }
         }
+        // While surveying an access point is only plotted: where it is, what it is called, and
+        // which measured one it is. Its model, power and height are for Planning.
+        let planning = self.mode == WorkMode::Plan;
+        if planning {
+            self.device_settings(ui, first, edits);
+        }
+        if picked.len() == 1 && first.existing {
+            let options = Self::measured_aps(floor);
+            if !options.is_empty() {
+                ui.label(egui::RichText::new("Measured as").text_style(egui::TextStyle::Body).color(r.on_surface_variant));
+                let current = first.link.as_ref().and_then(|k| options.iter().find(|o| &o.0 == k)).map_or("Not linked".to_string(), |o| o.1.clone());
+                egui::ComboBox::from_id_salt("ap_link").selected_text(current).width(230.0).show_ui(ui, |ui| {
+                    if ui.selectable_label(first.link.is_none(), "Not linked").clicked() {
+                        edits.push(ApEdit::Link(None));
+                    }
+                    for (key, text) in &options {
+                        if ui.selectable_label(first.link.as_ref() == Some(key), text).clicked() {
+                            edits.push(ApEdit::Link(Some(key.clone())));
+                        }
+                    }
+                });
+            }
+        }
+        ui.horizontal_wrapped(|ui| {
+            if theme::button(ui, ButtonKind::Text, None, "Duplicate").clicked() {
+                edits.push(ApEdit::Duplicate);
+            }
+            if planning && picked.len() == 1 && theme::button(ui, ButtonKind::Text, None, "Save as model").clicked() {
+                edits.push(ApEdit::SaveModel);
+            }
+        });
+    }
+
+    /// Enabled, installed, model, power and height of a device, for Planning.
+    fn device_settings(&self, ui: &mut egui::Ui, first: &PlannedAp, edits: &mut Vec<ApEdit>) {
+        let r = theme::roles(ui.ctx());
         let mut on = first.enabled;
         if theme::switch_row(ui, &mut on, "Enabled").changed() {
             edits.push(ApEdit::Enabled(on));
@@ -1925,31 +1963,6 @@ impl FloorTab {
             ui.label("Mount height");
             if ui.add(egui::DragValue::new(&mut h).range(0.3..=30.0).speed(0.05).suffix(" m").fixed_decimals(2)).changed() {
                 edits.push(ApEdit::Height(h));
-            }
-        });
-        if picked.len() == 1 && first.existing {
-            let options = Self::measured_aps(floor);
-            if !options.is_empty() {
-                ui.label(egui::RichText::new("Measured as").text_style(egui::TextStyle::Body).color(r.on_surface_variant));
-                let current = first.link.as_ref().and_then(|k| options.iter().find(|o| &o.0 == k)).map_or("Not linked".to_string(), |o| o.1.clone());
-                egui::ComboBox::from_id_salt("ap_link").selected_text(current).width(230.0).show_ui(ui, |ui| {
-                    if ui.selectable_label(first.link.is_none(), "Not linked").clicked() {
-                        edits.push(ApEdit::Link(None));
-                    }
-                    for (key, text) in &options {
-                        if ui.selectable_label(first.link.as_ref() == Some(key), text).clicked() {
-                            edits.push(ApEdit::Link(Some(key.clone())));
-                        }
-                    }
-                });
-            }
-        }
-        ui.horizontal_wrapped(|ui| {
-            if theme::button(ui, ButtonKind::Text, None, "Duplicate").clicked() {
-                edits.push(ApEdit::Duplicate);
-            }
-            if picked.len() == 1 && theme::button(ui, ButtonKind::Text, None, "Save as model").clicked() {
-                edits.push(ApEdit::SaveModel);
             }
         });
     }
@@ -2073,7 +2086,8 @@ impl FloorTab {
                     let p = to_plan(click);
                     if p.x >= 0.0 && p.y >= 0.0 && p.x <= size.0 && p.y <= size.1 {
                         let planning = self.mode == WorkMode::Plan;
-                        let template = self.ap_template.clone();
+                        // Installed access points are plotted bare: their model and settings are not known while surveying.
+                        let template = if planning { self.ap_template.clone() } else { PlannedAp::new(String::new(), 0.0, 0.0) };
                         if let Some(pr) = self.project.as_mut() {
                             let fl = pr.floor_mut();
                             let name = format!("AP {}", fl.layer(planning).len() + 1);
@@ -2489,7 +2503,7 @@ impl FloorTab {
             for (key, tool) in keys {
                 if ui.input(|i| i.key_pressed(key)) {
                     self.set_tool(tool);
-                    if tool == Tool::Aps {
+                    if tool == Tool::Aps && self.mode == WorkMode::Plan {
                         self.devices_open = true;
                     }
                 }
@@ -2762,7 +2776,9 @@ impl FloorTab {
             self.apply_ap_edit(edit);
         }
         self.layers_button(ui.ctx(), rect);
-        self.devices_button(ui.ctx(), rect);
+        if self.mode == WorkMode::Plan {
+            self.devices_button(ui.ctx(), rect);
+        }
         if self.floors_open {
             for edit in self.floors_bubble(ui.ctx(), rect) {
                 self.apply_floor_edit(ui.ctx(), edit);
