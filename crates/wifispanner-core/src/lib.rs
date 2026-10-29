@@ -29,24 +29,41 @@ pub enum Material {
     /// Concrete about 30 cm thick.
     ThickConcrete,
     Drywall,
+    DrywallHeavy,
     /// Full-height glass, such as a boardroom wall.
     Glass,
-    /// Doors.
-    Wood,
+    GlassThin,
+    Brick,
     /// Shelving and other metal: usually not full height.
     Metal,
+    /// A solid wood wall (a door is [`Material::Wood`]).
+    WoodWall,
+    /// Doors.
+    Wood,
+    DoorMetal,
+    DoorGlass,
     Window,
+    WindowDouble,
+    WindowTriple,
 }
 
 impl Material {
-    pub const ALL: [Material; 7] = [
+    pub const ALL: [Material; 15] = [
         Material::Concrete,
         Material::ThickConcrete,
         Material::Drywall,
+        Material::DrywallHeavy,
         Material::Glass,
-        Material::Wood,
+        Material::GlassThin,
+        Material::Brick,
         Material::Metal,
+        Material::WoodWall,
+        Material::Wood,
+        Material::DoorMetal,
+        Material::DoorGlass,
         Material::Window,
+        Material::WindowDouble,
+        Material::WindowTriple,
     ];
 
     pub fn attenuation(self) -> Attenuation {
@@ -54,10 +71,18 @@ impl Material {
             Material::Concrete => (12.0, 15.0, 18.0),
             Material::ThickConcrete => (18.0, 23.0, 27.0),
             Material::Drywall => (3.0, 4.0, 5.0),
+            Material::DrywallHeavy => (4.0, 5.0, 6.0),
             Material::Glass => (3.0, 4.0, 5.0),
-            Material::Wood => (3.0, 4.0, 5.0),
+            Material::GlassThin => (1.0, 2.0, 3.0),
+            Material::Brick => (6.0, 8.0, 10.0),
             Material::Metal => (20.0, 25.0, 30.0),
+            Material::WoodWall => (4.0, 5.0, 6.0),
+            Material::Wood => (3.0, 4.0, 5.0),
+            Material::DoorMetal => (15.0, 20.0, 24.0),
+            Material::DoorGlass => (2.0, 3.0, 4.0),
             Material::Window => (2.0, 3.0, 4.0),
+            Material::WindowDouble => (4.0, 5.0, 6.0),
+            Material::WindowTriple => (5.0, 7.0, 9.0),
         };
         Attenuation { ghz2_4, ghz5, ghz6 }
     }
@@ -66,11 +91,19 @@ impl Material {
         match self {
             Material::Concrete => "Concrete",
             Material::ThickConcrete => "Thick concrete (30 cm)",
-            Material::Drywall => "Drywall",
-            Material::Glass => "Glass",
-            Material::Wood => "Wood (door)",
+            Material::Drywall => "Drywall (Standard)",
+            Material::DrywallHeavy => "Drywall (Heavy Duty)",
+            Material::Glass => "Glass (Standard)",
+            Material::GlassThin => "Glass (Thin)",
+            Material::Brick => "Brick",
             Material::Metal => "Metal (shelf)",
-            Material::Window => "Window",
+            Material::WoodWall => "Wood",
+            Material::Wood => "Door (Wood)",
+            Material::DoorMetal => "Door (Metal)",
+            Material::DoorGlass => "Door (Glass)",
+            Material::Window => "Window (Single Pane)",
+            Material::WindowDouble => "Window (Double Pane)",
+            Material::WindowTriple => "Window (Triple Pane)",
         }
     }
 
@@ -89,10 +122,18 @@ impl Material {
             Material::Concrete => ([90, 90, 96], 4.0),
             Material::ThickConcrete => ([50, 50, 56], 7.0),
             Material::Drywall => ([150, 150, 150], 3.0),
+            Material::DrywallHeavy => ([110, 140, 130], 3.5),
             Material::Glass => ([60, 170, 200], 3.0),
-            Material::Wood => ([160, 100, 50], 3.0),
+            Material::GlassThin => ([150, 220, 235], 2.5),
+            Material::Brick => ([190, 70, 70], 4.0),
             Material::Metal => ([200, 90, 40], 3.5),
+            Material::WoodWall => ([140, 100, 60], 3.5),
+            Material::Wood => ([160, 100, 50], 3.0),
+            Material::DoorMetal => ([170, 170, 175], 3.0),
+            Material::DoorGlass => ([100, 200, 220], 3.0),
             Material::Window => ([120, 190, 240], 2.5),
+            Material::WindowDouble => ([80, 160, 235], 2.5),
+            Material::WindowTriple => ([40, 120, 220], 2.5),
         }
     }
 }

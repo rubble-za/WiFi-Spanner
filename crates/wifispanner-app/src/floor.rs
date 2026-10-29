@@ -19,7 +19,7 @@ use wifispanner_scan::{Band, ScanResult};
 
 use crate::settings::Settings;
 use crate::theme::{self, ButtonKind};
-use egui_material_icons::icons::{ICON_ADD, ICON_ARCHITECTURE, ICON_ROUTER, ICON_ARROW_BACK, ICON_OPEN_WITH, ICON_RESTART_ALT, ICON_VISIBILITY, ICON_VISIBILITY_OFF, ICON_HIGHLIGHT_ALT, ICON_DELETE, ICON_DESCRIPTION, ICON_FOLDER_OPEN, ICON_IMAGE, ICON_PLACE, ICON_SAVE, ICON_STRAIGHTEN, ICON_UNDO};
+use egui_material_icons::icons::{ICON_ADD, ICON_ARCHITECTURE, ICON_ARROW_SELECTOR_TOOL, ICON_CROP_FREE, ICON_EDIT, ICON_PAN_TOOL, ICON_ROUTER, ICON_ARROW_BACK, ICON_OPEN_WITH, ICON_RESTART_ALT, ICON_VISIBILITY, ICON_VISIBILITY_OFF, ICON_DELETE, ICON_DESCRIPTION, ICON_FOLDER_OPEN, ICON_IMAGE, ICON_PLACE, ICON_SAVE, ICON_STRAIGHTEN, ICON_UNDO};
 use crate::{Cmd, pdf, report, store};
 use crate::live::signal_color;
 
@@ -44,14 +44,14 @@ enum Tool {
     Scale,
     /// Draw walls: click the start, click the end.
     Walls,
-    /// Pick walls by clicking or dragging a box, then edit them together.
+    /// Pick walls and devices by clicking or dragging a box, then edit them together.
     Select,
     /// Line up the ghosted overlay floor with the active one by dragging it.
     Align,
     /// Place access points (installed ones while surveying, planned ones while planning).
     Aps,
-    /// Pick several access points by clicking or dragging a box, and edit them together.
-    ApSelect,
+    /// Move the plan about without changing anything.
+    Pan,
 }
 
 /// Textures are capped at this size per side; positions stay in plan pixels.
@@ -163,6 +163,10 @@ pub struct FloorTab {
     wall_material: Material,
     wall_height: Option<f32>,
     wall_start: Option<Pos2>,
+    wall_mode: WallMode,
+    /// Shift is held: no snapping.
+    no_snap: bool,
+    model_search: String,
     selected_walls: BTreeSet<usize>,
     /// Earlier states of the walls, for undo.
     wall_history: Vec<Vec<Wall>>,
@@ -172,9 +176,18 @@ pub struct FloorTab {
     report_dialog: Option<report::OptionsDialog>,
 }
 
+/// What the wall tool draws.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WallMode {
+    Wall,
+    Room,
+}
+
 /// What the access point palette asked for.
 enum ApEdit {
-    Tool(Tool),
+    /// The model new devices start as (or custom power when `None`).
+    Template(Option<ApModel>),
+    Search(String),
     Name(String),
     Height(f32),
     Tx(f32),
@@ -205,7 +218,7 @@ enum FloorEdit {
 
 /// What the wall palette asked for.
 enum WallEdit {
-    Tool(Tool),
+    Mode(WallMode),
     Material(Material),
     Height(Option<f32>),
     Ceiling(f32),
@@ -273,6 +286,9 @@ impl Default for FloorTab {
             wall_material: Material::Concrete,
             wall_height: Material::Concrete.default_height_m(),
             wall_start: None,
+            wall_mode: WallMode::Wall,
+            no_snap: false,
+            model_search: String::new(),
             selected_walls: BTreeSet::new(),
             wall_history: Vec::new(),
             last_wall_edit: None,
@@ -823,29 +839,6 @@ impl FloorTab {
                     }
                 }
             });
-            ui.separator();
-            ui.add_enabled_ui(self.project.is_some(), |ui| {
-                if self.mode == WorkMode::Survey && theme::chip(ui, self.tool == Tool::Survey, Some(ICON_PLACE), "Survey point").clicked() {
-                    self.tool = Tool::Survey;
-                }
-                if theme::chip(ui, matches!(self.tool, Tool::Aps | Tool::ApSelect), Some(ICON_ROUTER), "Access points").clicked() {
-                    self.tool = Tool::Aps;
-                }
-                // Planning only looks at the survey: it never scans.
-                if self.mode == WorkMode::Plan && theme::chip(ui, self.tool == Tool::Survey, Some(ICON_PLACE), "Survey data").clicked() {
-                    self.tool = Tool::Survey;
-                }
-                if theme::chip(ui, self.tool == Tool::Scale, Some(ICON_STRAIGHTEN), "Set scale").clicked() {
-                    self.tool = Tool::Scale;
-                    self.scale_clicks.clear();
-                }
-                // One chip for both wall tools; the palette over the plan switches between them.
-                if theme::chip(ui, matches!(self.tool, Tool::Walls | Tool::Select), Some(ICON_ARCHITECTURE), "Walls").clicked() {
-                    self.tool = Tool::Walls;
-                    self.wall_start = None;
-                    self.selected_walls.clear();
-                }
-            });
         });
 
         if self.mode == WorkMode::Plan {
@@ -948,10 +941,22 @@ impl FloorTab {
     fn apply_ap_edit(&mut self, edit: ApEdit) {
         let selected: Vec<usize> = self.aps_selected.iter().copied().collect();
         match edit {
-            ApEdit::Tool(t) => {
-                self.tool = t;
-                self.ap_drag = None;
-                self.ap_box_start = None;
+            ApEdit::Search(s) => {
+                self.model_search = s;
+                return;
+            }
+            ApEdit::Template(m) => {
+                self.ensure_models();
+                match m {
+                    Some(m) => {
+                        self.ap_template.model = Some(m.id());
+                        self.ap_template.radios = m.radios.clone();
+                    }
+                    None => {
+                        self.ap_template.model = None;
+                        self.ap_template.radios.clear();
+                    }
+                }
                 return;
             }
             ApEdit::PickModel => {
@@ -1062,136 +1067,6 @@ impl FloorTab {
             .collect()
     }
 
-    /// The access point palette over the right of the plan.
-    fn ap_bubble(&self, ctx: &egui::Context, canvas: Rect) -> Vec<ApEdit> {
-        let r = theme::roles(ctx);
-        let Some(floor) = self.project.as_ref().map(|p| p.floor()) else { return Vec::new() };
-        let picked: Vec<&PlannedAp> = self.aps_selected.iter().filter_map(|&i| floor.aps.get(i)).collect();
-        let selecting = self.tool == Tool::ApSelect;
-        let survey = self.mode == WorkMode::Survey;
-        let mut edits = Vec::new();
-        egui::Area::new(egui::Id::unique("ap_bubble"))
-            .order(egui::Order::Foreground)
-            .pivot(egui::Align2::RIGHT_TOP)
-            .fixed_pos(canvas.right_top() + Vec2::new(-12.0 - if self.floors_open { 250.0 } else { 0.0 }, RIGHT_BUBBLES_TOP))
-            .show(ctx, |ui| {
-                egui::Frame::new()
-                    .fill(r.surface_container_high)
-                    .stroke(Stroke::new(1.0, r.outline_variant))
-                    .corner_radius(20)
-                    .inner_margin(14)
-                    .shadow(theme::shadow(r.shadow, 16, 0.18))
-                    .show(ui, |ui| {
-                        ui.set_width(250.0);
-                        ui.horizontal(|ui| {
-                            if theme::chip(ui, !selecting, Some(ICON_ROUTER), "Place").clicked() {
-                                edits.push(ApEdit::Tool(Tool::Aps));
-                            }
-                            if theme::chip(ui, selecting, Some(ICON_HIGHLIGHT_ALT), "Select").clicked() {
-                                edits.push(ApEdit::Tool(Tool::ApSelect));
-                            }
-                        });
-                        ui.add_space(6.0);
-                        let what = if survey { "installed access points" } else { "access points" };
-                        let hint = match (selecting, picked.len()) {
-                            (false, _) => format!("Click the plan to place one of the {what}; drag one to move it."),
-                            (true, 0) => "Click one, or drag a box over several. Shift or Ctrl adds to the selection.".to_string(),
-                            (true, 1) => "1 selected. Drag to move it.".to_string(),
-                            (true, n) => format!("{n} selected. Drag any to move them together."),
-                        };
-                        ui.label(egui::RichText::new(hint).size(12.5).color(r.on_surface_variant));
-                        let (existing, planned) = (floor.aps.iter().filter(|a| a.existing).count(), floor.aps.iter().filter(|a| !a.existing).count());
-                        ui.label(egui::RichText::new(format!("{existing} installed, {planned} planned on this floor")).size(12.5).color(r.on_surface_variant));
-                        let Some(first) = picked.first() else { return };
-                        ui.add_space(6.0);
-                        if picked.len() == 1 {
-                            let mut name = first.name.clone();
-                            if ui.add(egui::TextEdit::singleline(&mut name).desired_width(f32::INFINITY)).changed() {
-                                edits.push(ApEdit::Name(name));
-                            }
-                        }
-                        let mut on = first.enabled;
-                        if theme::switch_row(ui, &mut on, "Enabled").changed() {
-                            edits.push(ApEdit::Enabled(on));
-                        }
-                        let mut inst = first.existing;
-                        if theme::switch_row(ui, &mut inst, "Installed (as built)").changed() {
-                            edits.push(ApEdit::Existing(inst));
-                        }
-                        ui.add_space(4.0);
-                        ui.label(egui::RichText::new("Model").size(12.5).color(r.on_surface_variant));
-                        let label = first.model.clone().unwrap_or_else(|| "Custom (set power by hand)".into());
-                        if theme::button(ui, ButtonKind::Tonal, None, &label).clicked() {
-                            edits.push(ApEdit::PickModel);
-                        }
-                        if first.radios.is_empty() {
-                            let (mut t, mut g) = (first.tx_dbm, first.gain_dbi);
-                            egui::Grid::new("ap_power").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
-                                ui.label("Power, all bands");
-                                if ui.add(egui::DragValue::new(&mut t).range(0.0..=36.0).speed(0.1).suffix(" dBm").fixed_decimals(1)).changed() {
-                                    edits.push(ApEdit::Tx(t));
-                                }
-                                ui.end_row();
-                                ui.label("Antenna gain");
-                                if ui.add(egui::DragValue::new(&mut g).range(0.0..=20.0).speed(0.1).suffix(" dBi").fixed_decimals(1)).changed() {
-                                    edits.push(ApEdit::Gain(g));
-                                }
-                                ui.end_row();
-                            });
-                        } else {
-                            for rd in &first.radios {
-                                let band = match rd.band {
-                                    RadioBand::Ghz2_4 => "2.4 GHz",
-                                    RadioBand::Ghz5 => "5 GHz",
-                                    RadioBand::Ghz6 => "6 GHz",
-                                };
-                                ui.label(egui::RichText::new(format!("{band}:  {:.0} dBm + {:.1} dBi{}", rd.tx_dbm, rd.gain_dbi, rd.eirp_cap_dbm.map_or(String::new(), |c| format!(" (max {c:.0} dBm EIRP)")))).size(13.0));
-                            }
-                            if ui.small_button("Use custom power instead").clicked() {
-                                edits.push(ApEdit::Custom);
-                            }
-                        }
-                        let mut h = first.height_m;
-                        ui.horizontal(|ui| {
-                            ui.label("Mount height");
-                            if ui.add(egui::DragValue::new(&mut h).range(0.3..=30.0).speed(0.05).suffix(" m").fixed_decimals(2)).changed() {
-                                edits.push(ApEdit::Height(h));
-                            }
-                        });
-                        if picked.len() == 1 && first.existing {
-                            let options = Self::measured_aps(floor);
-                            if !options.is_empty() {
-                                ui.label(egui::RichText::new("Measured as").size(12.5).color(r.on_surface_variant));
-                                let current = first.link.as_ref().and_then(|k| options.iter().find(|o| &o.0 == k)).map_or("Not linked".to_string(), |o| o.1.clone());
-                                egui::ComboBox::from_id_salt("ap_link").selected_text(current).width(230.0).show_ui(ui, |ui| {
-                                    if ui.selectable_label(first.link.is_none(), "Not linked").clicked() {
-                                        edits.push(ApEdit::Link(None));
-                                    }
-                                    for (key, text) in &options {
-                                        if ui.selectable_label(first.link.as_ref() == Some(key), text).clicked() {
-                                            edits.push(ApEdit::Link(Some(key.clone())));
-                                        }
-                                    }
-                                });
-                            }
-                        }
-                        ui.add_space(6.0);
-                        ui.horizontal_wrapped(|ui| {
-                            if theme::button(ui, ButtonKind::Text, None, "Duplicate").clicked() {
-                                edits.push(ApEdit::Duplicate);
-                            }
-                            if picked.len() == 1 && theme::button(ui, ButtonKind::Text, None, "Save as model").clicked() {
-                                edits.push(ApEdit::SaveModel);
-                            }
-                            if theme::button(ui, ButtonKind::Outlined, Some(ICON_DELETE), "Delete").clicked() {
-                                edits.push(ApEdit::Delete);
-                            }
-                        });
-                    });
-            });
-        edits
-    }
-
     /// The searchable list of access point models.
     fn model_dialog(&mut self, ctx: &egui::Context) {
         let Some(query) = self.model_picker.as_mut() else { return };
@@ -1276,12 +1151,9 @@ impl FloorTab {
     /// The walls the bubble's controls act on: the selection, or the next wall to be drawn.
     fn apply_wall_edit(&mut self, edit: WallEdit) {
         match edit {
-            WallEdit::Tool(t) => {
-                self.tool = t;
+            WallEdit::Mode(m) => {
+                self.wall_mode = m;
                 self.wall_start = None;
-                if t == Tool::Walls {
-                    self.selected_walls.clear();
-                }
             }
             WallEdit::Undo => self.undo_walls(),
             WallEdit::Delete => self.delete_selected_walls(),
@@ -1333,25 +1205,177 @@ impl FloorTab {
         }
     }
 
-    /// The floating palette over the right of the plan: tool, material,
-    /// height and the edit actions. Returns what was asked for.
-    fn wall_bubble(&self, ctx: &egui::Context, canvas: Rect) -> Vec<WallEdit> {
+    /// Switch tool, dropping whatever the old one had half done.
+    fn set_tool(&mut self, tool: Tool) {
+        self.tool = tool;
+        self.wall_start = None;
+        self.ap_drag = None;
+        self.box_start = None;
+        if tool == Tool::Scale {
+            self.scale_clicks.clear();
+        }
+        if matches!(tool, Tool::Walls) {
+            self.selected_walls.clear();
+        }
+    }
+
+    /// The floating bar of tools over the top of the plan.
+    fn tool_bar(&mut self, ctx: &egui::Context, canvas: Rect) {
         let r = theme::roles(ctx);
-        let Some(floor) = self.project.as_ref().map(|p| p.floor()) else { return Vec::new() };
-        let selecting = self.tool == Tool::Select;
-        let picked: Vec<&Wall> = self.selected_walls.iter().filter_map(|&i| floor.walls.get(i)).collect();
-        // What the controls show: the selection when selecting, else the next wall.
-        let (material, height) = if selecting {
-            let first = picked.first();
-            let same_material = first.filter(|f| picked.iter().all(|w| w.material == f.material)).map(|f| f.material);
-            let same_height = first.filter(|f| picked.iter().all(|w| w.height_m == f.height_m)).map(|f| f.height_m);
-            (same_material, same_height)
-        } else {
-            (Some(self.wall_material), Some(self.wall_height))
+        let survey = self.mode == WorkMode::Survey;
+        let tools: [(Tool, egui_material_icons::MaterialIcon, &str, &str); 6] = [
+            (Tool::Select, ICON_ARROW_SELECTOR_TOOL, "Select", "S"),
+            (Tool::Pan, ICON_PAN_TOOL, "Pan", "H"),
+            (Tool::Survey, ICON_PLACE, if survey { "Survey point" } else { "Survey data" }, "P"),
+            (Tool::Walls, ICON_ARCHITECTURE, "Walls", "W"),
+            (Tool::Scale, ICON_STRAIGHTEN, "Set scale", "C"),
+            (Tool::Aps, ICON_ROUTER, "Add Devices", "D"),
+        ];
+        let mut chosen = None;
+        egui::Area::new(egui::Id::unique("tool_bar"))
+            .order(egui::Order::Foreground)
+            .pivot(egui::Align2::CENTER_TOP)
+            .fixed_pos(canvas.center_top() + Vec2::new(0.0, 10.0))
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(r.surface_container_high)
+                    .stroke(Stroke::new(1.0, r.outline_variant))
+                    .corner_radius(22)
+                    .inner_margin(egui::Margin::symmetric(8, 6))
+                    .shadow(theme::shadow(r.shadow, 16, 0.18))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            for (tool, icon, name, key) in tools {
+                                let on = self.tool == tool;
+                                let colour = if on { r.on_secondary_container } else { r.on_surface };
+                                let text = egui::RichText::new(icon.codepoint).font(egui::FontId::new(22.0, icon.font_family())).color(colour);
+                                let fill = if on { r.secondary_container } else { Color32::TRANSPARENT };
+                                let resp = ui.add_sized([40.0, 40.0], egui::Button::new(text).fill(fill).corner_radius(14));
+                                let resp = resp.on_hover_ui(|ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(egui::RichText::new(name).strong());
+                                        ui.label(egui::RichText::new(key).monospace());
+                                    });
+                                });
+                                if resp.clicked() {
+                                    chosen = Some(tool);
+                                }
+                            }
+                        });
+                    });
+            });
+        if let Some(t) = chosen {
+            self.set_tool(t);
+        }
+    }
+
+    /// What to do next, and a Done button, under the tool bar.
+    fn hint_banner(&mut self, ctx: &egui::Context, canvas: Rect) {
+        let r = theme::roles(ctx);
+        let survey = self.mode == WorkMode::Survey;
+        let text = match (self.tool, self.wall_mode) {
+            (Tool::Walls, WallMode::Wall) => "Click to place the start of a wall, then its end. Esc or right-click cancels, hold Shift to disable snapping.",
+            (Tool::Walls, WallMode::Room) => "Click one corner of the room, then the opposite corner. Esc or right-click cancels, hold Shift to disable snapping.",
+            (Tool::Aps, _) => "Pick a device on the right, then click the plan to place it. Drag a device to move it.",
+            (Tool::Scale, _) => "Click two points a known distance apart.",
+            (Tool::Survey, _) if survey => "Click where you are standing to scan, or click a survey point to see what was heard.",
+            (Tool::Survey, _) => "Click a survey point to see what was heard there. Planning never scans.",
+            (Tool::Pan, _) => "Drag to move the plan.",
+            (Tool::Align, _) => "Drag the ghost floor to line it up.",
+            _ => return,
         };
+        let mut done = false;
+        egui::Area::new(egui::Id::unique("hint_banner"))
+            .order(egui::Order::Foreground)
+            .pivot(egui::Align2::CENTER_TOP)
+            .fixed_pos(canvas.center_top() + Vec2::new(0.0, 66.0))
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(r.surface_container_high)
+                    .stroke(Stroke::new(1.0, r.outline_variant))
+                    .corner_radius(20)
+                    .inner_margin(egui::Margin::symmetric(14, 6))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.add(egui::Label::new(egui::RichText::new(text).size(13.0)).wrap_mode(egui::TextWrapMode::Extend));
+                            if theme::button(ui, ButtonKind::Filled, None, "Done").clicked() {
+                                done = true;
+                            }
+                        });
+                    });
+            });
+        if done {
+            self.set_tool(Tool::Select);
+        }
+    }
+
+    /// A list of materials with their loss, as in the wall menu.
+    fn material_rows(&self, ui: &mut egui::Ui, current: Option<Material>, edits: &mut Vec<WallEdit>) {
+        let r = theme::roles(ui.ctx());
+        for m in Material::ALL {
+            let a = m.attenuation();
+            let db = match self.pred_band {
+                Band::Ghz2_4 => a.ghz2_4,
+                Band::Ghz5 => a.ghz5,
+                Band::Ghz6 => a.ghz6,
+            };
+            let ([cr, cg, cb], _) = m.style();
+            let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0), Sense::click());
+            if current == Some(m) {
+                ui.painter().rect_filled(rect, 8.0, r.secondary_container);
+            } else if resp.hovered() {
+                ui.painter().rect_filled(rect, 8.0, theme::state_layer(Color32::TRANSPARENT, r.on_surface, 0.08));
+            }
+            let font = egui::FontId::proportional(14.0);
+            ui.painter().text(rect.left_center() + Vec2::new(10.0, 0.0), egui::Align2::LEFT_CENTER, m.name(), font.clone(), r.on_surface);
+            ui.painter().circle_filled(rect.right_center() - Vec2::new(12.0, 0.0), 5.0, Color32::from_rgb(cr, cg, cb));
+            ui.painter().text(rect.right_center() - Vec2::new(26.0, 0.0), egui::Align2::RIGHT_CENTER, format!("{db:.0} dB"), font, r.on_surface_variant);
+            if resp.clicked() {
+                edits.push(WallEdit::Material(m));
+            }
+        }
+    }
+
+    /// Height, ceiling and undo, under a wall menu. `shown` is the height the
+    /// controls show: that of the selection or of the next wall.
+    fn wall_height_controls(&self, ui: &mut egui::Ui, floor: &Floor, shown: Option<Option<f32>>, selecting: bool, edits: &mut Vec<WallEdit>) {
+        let r = theme::roles(ui.ctx());
         let ceiling = floor.ceiling_m;
-        let mut edits = Vec::new();
-        egui::Area::new(egui::Id::unique("wall_bubble"))
+        ui.add_space(6.0);
+        let mut full = shown.is_none_or(|h| h.is_none());
+        let mixed = shown.is_none();
+        if theme::switch_row(ui, &mut full, "Full height").changed() {
+            edits.push(WallEdit::Height(if full { None } else { Some(ceiling) }));
+        }
+        let mut metres = shown.flatten().unwrap_or(ceiling);
+        ui.horizontal(|ui| {
+            ui.label("Height");
+            if ui.add_enabled(!full, egui::DragValue::new(&mut metres).range(0.1..=ceiling.max(0.2)).speed(0.05).suffix(" m").fixed_decimals(2)).changed() {
+                edits.push(WallEdit::Height(Some(metres.min(ceiling))));
+            }
+            if mixed && selecting {
+                ui.label(egui::RichText::new("(mixed)").size(12.0).color(r.on_surface_variant));
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Ceiling");
+            let mut c = ceiling;
+            if ui.add(egui::DragValue::new(&mut c).range(1.0..=30.0).speed(0.05).suffix(" m").fixed_decimals(2)).changed() {
+                edits.push(WallEdit::Ceiling(c));
+            }
+        });
+    }
+
+    /// The menu to the right of the plan for the active tool.
+    fn right_panel(&self, ctx: &egui::Context, canvas: Rect) -> (Vec<WallEdit>, Vec<ApEdit>) {
+        let r = theme::roles(ctx);
+        let (mut walls_out, mut aps_out) = (Vec::new(), Vec::new());
+        if !matches!(self.tool, Tool::Walls | Tool::Select | Tool::Aps) {
+            return (walls_out, aps_out);
+        }
+        let Some(floor) = self.project.as_ref().map(|p| p.floor()) else { return (walls_out, aps_out) };
+        egui::Area::new(egui::Id::unique("right_panel"))
             .order(egui::Order::Foreground)
             .pivot(egui::Align2::RIGHT_TOP)
             .fixed_pos(canvas.right_top() + Vec2::new(-12.0 - if self.floors_open { 250.0 } else { 0.0 }, RIGHT_BUBBLES_TOP))
@@ -1363,87 +1387,219 @@ impl FloorTab {
                     .inner_margin(14)
                     .shadow(theme::shadow(r.shadow, 16, 0.18))
                     .show(ui, |ui| {
-                        ui.set_width(230.0);
-                        ui.horizontal(|ui| {
-                            if theme::chip(ui, !selecting, Some(ICON_ARCHITECTURE), "Draw").clicked() {
-                                edits.push(WallEdit::Tool(Tool::Walls));
-                            }
-                            if theme::chip(ui, selecting, Some(ICON_HIGHLIGHT_ALT), "Select").clicked() {
-                                edits.push(WallEdit::Tool(Tool::Select));
-                            }
-                        });
-                        ui.add_space(6.0);
-                        let hint = if selecting {
-                            match picked.len() {
-                                0 => "Click a wall, or drag a box over several. Shift or Ctrl adds to the selection.".to_string(),
-                                1 => "1 wall selected".to_string(),
-                                n => format!("{n} walls selected"),
-                            }
-                        } else {
-                            "Click the start of a wall, then its end.".to_string()
-                        };
-                        ui.label(egui::RichText::new(hint).size(12.5).color(r.on_surface_variant));
-                        ui.add_space(6.0);
-                        let editable = !selecting || !picked.is_empty();
-                        ui.add_enabled_ui(editable, |ui| {
-                            for m in Material::ALL {
-                                let ([cr, cg, cb], _) = m.style();
-                                let on = material == Some(m);
-                                ui.horizontal(|ui| {
-                                    let (swatch, _) = ui.allocate_exact_size(Vec2::new(18.0, 18.0), Sense::hover());
-                                    ui.painter().rect_filled(swatch.shrink2(Vec2::new(0.0, 6.0)), 3.0, Color32::from_rgb(cr, cg, cb));
-                                    if ui.add_sized([190.0, 26.0], egui::Button::selectable(on, m.name()).frame_when_inactive(false)).clicked() {
-                                        edits.push(WallEdit::Material(m));
-                                    }
-                                });
-                            }
-                            ui.add_space(6.0);
-                            let mut full = height.is_none_or(|h| h.is_none());
-                            let mixed = height.is_none();
-                            ui.horizontal(|ui| {
-                                if theme::switch_row(ui, &mut full, "Full height").changed() {
-                                    edits.push(WallEdit::Height(if full { None } else { Some(ceiling) }));
-                                }
-                            });
-                            let mut metres = height.flatten().unwrap_or(ceiling);
-                            ui.horizontal(|ui| {
-                                ui.label("Height");
-                                let changed = ui
-                                    .add_enabled(!full, egui::DragValue::new(&mut metres).range(0.1..=ceiling.max(0.2)).speed(0.05).suffix(" m").fixed_decimals(2))
-                                    .changed();
-                                if changed {
-                                    edits.push(WallEdit::Height(Some(metres.min(ceiling))));
-                                }
-                                if mixed && selecting {
-                                    ui.label(egui::RichText::new("(mixed)").size(12.0).color(r.on_surface_variant));
-                                }
-                            });
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Ceiling");
-                            let mut c = ceiling;
-                            if ui.add(egui::DragValue::new(&mut c).range(1.0..=30.0).speed(0.05).suffix(" m").fixed_decimals(2)).changed() {
-                                edits.push(WallEdit::Ceiling(c));
-                            }
-                        });
-                        ui.add_space(6.0);
-                        ui.horizontal(|ui| {
-                            if ui.add_enabled_ui(!self.wall_history.is_empty(), |ui| theme::button(ui, ButtonKind::Text, Some(ICON_UNDO), "Undo")).inner.clicked() {
-                                edits.push(WallEdit::Undo);
-                            }
-                            if selecting
-                                && ui.add_enabled_ui(!picked.is_empty(), |ui| theme::button(ui, ButtonKind::Outlined, Some(ICON_DELETE), "Delete")).inner.clicked()
-                            {
-                                edits.push(WallEdit::Delete);
-                            }
+                        ui.set_width(250.0);
+                        // Long menus scroll rather than run off the window.
+                        egui::ScrollArea::vertical().max_height((canvas.height() - RIGHT_BUBBLES_TOP - 40.0).max(160.0)).show(ui, |ui| match self.tool {
+                            Tool::Walls => self.walls_content(ui, floor, &mut walls_out),
+                            Tool::Select => self.select_content(ui, floor, &mut walls_out, &mut aps_out),
+                            Tool::Aps => self.devices_content(ui, floor, &mut aps_out),
+                            _ => {}
                         });
                     });
             });
-        edits
+        (walls_out, aps_out)
+    }
+
+    /// The wall menu: wall or room, material list, heights.
+    fn walls_content(&self, ui: &mut egui::Ui, floor: &Floor, edits: &mut Vec<WallEdit>) {
+        let r = theme::roles(ui.ctx());
+        ui.label(egui::RichText::new("Auto-draw Walls").size(15.0).color(r.primary));
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            if theme::chip(ui, self.wall_mode == WallMode::Wall, Some(ICON_EDIT), "Wall").clicked() {
+                edits.push(WallEdit::Mode(WallMode::Wall));
+            }
+            if theme::chip(ui, self.wall_mode == WallMode::Room, Some(ICON_CROP_FREE), "Room").clicked() {
+                edits.push(WallEdit::Mode(WallMode::Room));
+            }
+        });
+        ui.add_space(4.0);
+        self.material_rows(ui, Some(self.wall_material), edits);
+        self.wall_height_controls(ui, floor, Some(self.wall_height), false, edits);
+        ui.add_space(6.0);
+        if ui.add_enabled_ui(!self.wall_history.is_empty(), |ui| theme::button(ui, ButtonKind::Text, Some(ICON_UNDO), "Undo")).inner.clicked() {
+            edits.push(WallEdit::Undo);
+        }
+    }
+
+    /// The menu for the current selection of walls and devices.
+    fn select_content(&self, ui: &mut egui::Ui, floor: &Floor, walls_out: &mut Vec<WallEdit>, aps_out: &mut Vec<ApEdit>) {
+        let r = theme::roles(ui.ctx());
+        let walls: Vec<&Wall> = self.selected_walls.iter().filter_map(|&i| floor.walls.get(i)).collect();
+        let aps: Vec<&PlannedAp> = self.aps_selected.iter().filter_map(|&i| floor.aps.get(i)).collect();
+        ui.label(egui::RichText::new("Select").size(15.0).color(r.primary));
+        if walls.is_empty() && aps.is_empty() {
+            ui.label(egui::RichText::new("Click a wall or a device, or drag a box over several. Ctrl or Shift adds to the selection, Ctrl+A selects everything.").size(12.5).color(r.on_surface_variant));
+            return;
+        }
+        if !walls.is_empty() {
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(format!("{} wall{}", walls.len(), if walls.len() == 1 { "" } else { "s" })).size(13.0).color(r.on_surface_variant));
+            let first = walls[0];
+            let material = walls.iter().all(|w| w.material == first.material).then_some(first.material);
+            let height = walls.iter().all(|w| w.height_m == first.height_m).then_some(first.height_m);
+            self.material_rows(ui, material, walls_out);
+            self.wall_height_controls(ui, floor, height, true, walls_out);
+        }
+        if !aps.is_empty() {
+            ui.add_space(8.0);
+            self.device_controls(ui, floor, &aps, aps_out);
+        }
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| {
+            if ui.add_enabled_ui(!self.wall_history.is_empty(), |ui| theme::button(ui, ButtonKind::Text, Some(ICON_UNDO), "Undo")).inner.clicked() {
+                walls_out.push(WallEdit::Undo);
+            }
+            if theme::button(ui, ButtonKind::Outlined, Some(ICON_DELETE), "Delete").clicked() {
+                if !walls.is_empty() {
+                    walls_out.push(WallEdit::Delete);
+                }
+                if !aps.is_empty() {
+                    aps_out.push(ApEdit::Delete);
+                }
+            }
+        });
+    }
+
+    /// The "Add Devices" menu: a searchable list of models to place.
+    fn devices_content(&self, ui: &mut egui::Ui, floor: &Floor, edits: &mut Vec<ApEdit>) {
+        let r = theme::roles(ui.ctx());
+        ui.label(egui::RichText::new("Add Devices").size(15.0).color(r.primary));
+        let (installed, planned) = (floor.aps.iter().filter(|a| a.existing).count(), floor.aps.iter().filter(|a| !a.existing).count());
+        ui.label(egui::RichText::new(format!("{installed} installed, {planned} planned on this floor")).size(12.5).color(r.on_surface_variant));
+        ui.add_space(4.0);
+        let mut search = self.model_search.clone();
+        if ui.add(egui::TextEdit::singleline(&mut search).hint_text("Search").desired_width(f32::INFINITY)).changed() {
+            edits.push(ApEdit::Search(search));
+        }
+        ui.add_space(4.0);
+        let current = self.ap_template.model.clone();
+        let custom = current.is_none();
+        let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), Sense::click());
+        if custom {
+            ui.painter().rect_filled(rect, 8.0, r.secondary_container);
+        } else if resp.hovered() {
+            ui.painter().rect_filled(rect, 8.0, theme::state_layer(Color32::TRANSPARENT, r.on_surface, 0.08));
+        }
+        ui.painter().text(rect.left_center() + Vec2::new(10.0, 0.0), egui::Align2::LEFT_CENTER, "Custom (set power by hand)", egui::FontId::proportional(14.0), r.on_surface);
+        if resp.clicked() {
+            edits.push(ApEdit::Template(None));
+        }
+        egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+            for m in catalog::search(&self.models, &self.model_search) {
+                let on = current.as_deref() == Some(m.id().as_str());
+                let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 46.0), Sense::click());
+                if on {
+                    ui.painter().rect_filled(rect, 8.0, r.secondary_container);
+                } else if resp.hovered() {
+                    ui.painter().rect_filled(rect, 8.0, theme::state_layer(Color32::TRANSPARENT, r.on_surface, 0.08));
+                }
+                ui.painter().text(rect.left_top() + Vec2::new(10.0, 6.0), egui::Align2::LEFT_TOP, &m.name, egui::FontId::proportional(14.0), r.on_surface);
+                let bands: Vec<&str> = m.radios.iter().map(|rd| match rd.band {
+                    RadioBand::Ghz2_4 => "2.4",
+                    RadioBand::Ghz5 => "5",
+                    RadioBand::Ghz6 => "6",
+                }).collect();
+                let sub = format!("{} GHz  |  {}  |  {}", bands.join(" + "), m.vendor, if m.verified { "from maker's specs" } else { "typical" });
+                ui.painter().text(rect.left_top() + Vec2::new(10.0, 25.0), egui::Align2::LEFT_TOP, sub, egui::FontId::proportional(11.5), r.on_surface_variant);
+                if resp.clicked() {
+                    edits.push(ApEdit::Template(Some(m.clone())));
+                }
+            }
+        });
+    }
+
+    /// Controls for the selected devices.
+    fn device_controls(&self, ui: &mut egui::Ui, floor: &Floor, picked: &[&PlannedAp], edits: &mut Vec<ApEdit>) {
+        let r = theme::roles(ui.ctx());
+        let first = picked[0];
+        ui.label(egui::RichText::new(format!("{} device{}", picked.len(), if picked.len() == 1 { "" } else { "s" })).size(13.0).color(r.on_surface_variant));
+        if picked.len() == 1 {
+            let mut name = first.name.clone();
+            if ui.add(egui::TextEdit::singleline(&mut name).desired_width(f32::INFINITY)).changed() {
+                edits.push(ApEdit::Name(name));
+            }
+        }
+        let mut on = first.enabled;
+        if theme::switch_row(ui, &mut on, "Enabled").changed() {
+            edits.push(ApEdit::Enabled(on));
+        }
+        let mut inst = first.existing;
+        if theme::switch_row(ui, &mut inst, "Installed (as built)").changed() {
+            edits.push(ApEdit::Existing(inst));
+        }
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new("Model").size(12.5).color(r.on_surface_variant));
+        let label = first.model.clone().unwrap_or_else(|| "Custom (set power by hand)".into());
+        if theme::button(ui, ButtonKind::Tonal, None, &label).clicked() {
+            edits.push(ApEdit::PickModel);
+        }
+        if first.radios.is_empty() {
+            let (mut t, mut g) = (first.tx_dbm, first.gain_dbi);
+            egui::Grid::new("ap_power").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                ui.label("Power, all bands");
+                if ui.add(egui::DragValue::new(&mut t).range(0.0..=36.0).speed(0.1).suffix(" dBm").fixed_decimals(1)).changed() {
+                    edits.push(ApEdit::Tx(t));
+                }
+                ui.end_row();
+                ui.label("Antenna gain");
+                if ui.add(egui::DragValue::new(&mut g).range(0.0..=20.0).speed(0.1).suffix(" dBi").fixed_decimals(1)).changed() {
+                    edits.push(ApEdit::Gain(g));
+                }
+                ui.end_row();
+            });
+        } else {
+            for rd in &first.radios {
+                let band = match rd.band {
+                    RadioBand::Ghz2_4 => "2.4 GHz",
+                    RadioBand::Ghz5 => "5 GHz",
+                    RadioBand::Ghz6 => "6 GHz",
+                };
+                ui.label(egui::RichText::new(format!("{band}:  {:.0} dBm + {:.1} dBi{}", rd.tx_dbm, rd.gain_dbi, rd.eirp_cap_dbm.map_or(String::new(), |c| format!(" (max {c:.0} dBm EIRP)")))).size(13.0));
+            }
+            if ui.small_button("Use custom power instead").clicked() {
+                edits.push(ApEdit::Custom);
+            }
+        }
+        let mut h = first.height_m;
+        ui.horizontal(|ui| {
+            ui.label("Mount height");
+            if ui.add(egui::DragValue::new(&mut h).range(0.3..=30.0).speed(0.05).suffix(" m").fixed_decimals(2)).changed() {
+                edits.push(ApEdit::Height(h));
+            }
+        });
+        if picked.len() == 1 && first.existing {
+            let options = Self::measured_aps(floor);
+            if !options.is_empty() {
+                ui.label(egui::RichText::new("Measured as").size(12.5).color(r.on_surface_variant));
+                let current = first.link.as_ref().and_then(|k| options.iter().find(|o| &o.0 == k)).map_or("Not linked".to_string(), |o| o.1.clone());
+                egui::ComboBox::from_id_salt("ap_link").selected_text(current).width(230.0).show_ui(ui, |ui| {
+                    if ui.selectable_label(first.link.is_none(), "Not linked").clicked() {
+                        edits.push(ApEdit::Link(None));
+                    }
+                    for (key, text) in &options {
+                        if ui.selectable_label(first.link.as_ref() == Some(key), text).clicked() {
+                            edits.push(ApEdit::Link(Some(key.clone())));
+                        }
+                    }
+                });
+            }
+        }
+        ui.horizontal_wrapped(|ui| {
+            if theme::button(ui, ButtonKind::Text, None, "Duplicate").clicked() {
+                edits.push(ApEdit::Duplicate);
+            }
+            if picked.len() == 1 && theme::button(ui, ButtonKind::Text, None, "Save as model").clicked() {
+                edits.push(ApEdit::SaveModel);
+            }
+        });
     }
 
     /// Where a wall point at `plan` lands once snapped.
     fn snapped(&self, plan: Pos2, zoom: f32) -> Pos2 {
+        if self.no_snap {
+            return plan;
+        }
         let walls = self.project.as_ref().map_or(&[][..], |p| &p.floor().walls[..]);
         let s = walls::snap([plan.x, plan.y], self.wall_start.map(|p| [p.x, p.y]), walls, WALL_SNAP_PX / zoom);
         Pos2::new(s[0], s[1])
@@ -1461,13 +1617,27 @@ impl FloorTab {
         if start.distance(at) < 1.0 {
             return;
         }
+        // A room is four walls round the two corners; a wall is just the one.
+        let corners = match self.wall_mode {
+            WallMode::Wall => vec![([start.x, start.y], [at.x, at.y])],
+            WallMode::Room => {
+                if (start.x - at.x).abs() < 2.0 || (start.y - at.y).abs() < 2.0 {
+                    return;
+                }
+                let (tl, tr, br, bl) = ([start.x.min(at.x), start.y.min(at.y)], [start.x.max(at.x), start.y.min(at.y)], [start.x.max(at.x), start.y.max(at.y)], [start.x.min(at.x), start.y.max(at.y)]);
+                vec![(tl, tr), (tr, br), (br, bl), (bl, tl)]
+            }
+        };
         self.remember_walls(false);
-        let mut wall = Wall::new([start.x, start.y], [at.x, at.y], self.wall_material);
-        wall.height_m = self.wall_height;
+        let (material, height) = (self.wall_material, self.wall_height);
         if let Some(p) = self.project.as_mut() {
             let tol = WALL_CARVE_PX / zoom;
-            p.floor_mut().walls = p.floor().walls.iter().flat_map(|w| w.carve(&wall, tol)).collect();
-            p.floor_mut().walls.push(wall);
+            for (a, b) in corners {
+                let mut wall = Wall::new(a, b, material);
+                wall.height_m = height;
+                p.floor_mut().walls = p.floor().walls.iter().flat_map(|w| w.carve(&wall, tol)).collect();
+                p.floor_mut().walls.push(wall);
+            }
         }
         self.wall_start = None;
         self.autosave();
@@ -1477,7 +1647,7 @@ impl FloorTab {
     /// one. Selecting: click or drag a box, Shift or Ctrl adds. Either way,
     /// dragging an access point moves it, and the whole selection with it.
     fn ap_input(&mut self, resp: &egui::Response, ui: &egui::Ui, zoom: f32, to_plan: &impl Fn(Pos2) -> Pos2, to_screen: &impl Fn(Pos2) -> Pos2, size: (f32, f32)) {
-        let selecting = self.tool == Tool::ApSelect;
+        let selecting = self.tool == Tool::Select;
         let additive = ui.input(|i| i.modifiers.shift || i.modifiers.command);
         let near = |this: &Self, screen: Pos2| -> Option<usize> {
             this.project.as_ref()?.floor().aps.iter().position(|a| to_screen(Pos2::new(a.x, a.y)).distance(screen) <= AP_PICK_PX)
@@ -1575,7 +1745,10 @@ impl FloorTab {
         if resp.drag_started_by(egui::PointerButton::Primary) {
             self.box_start = ui.input(|i| i.pointer.press_origin()).map(to_plan);
         }
-        if resp.drag_stopped_by(egui::PointerButton::Primary)
+        if resp.drag_stopped_by(egui::PointerButton::Primary) && self.ap_drag.is_some() {
+            // A device was being moved, not a box drawn.
+            self.box_start = None;
+        } else if resp.drag_stopped_by(egui::PointerButton::Primary)
             && let (Some(a), Some(b)) = (self.box_start.take(), resp.interact_pointer_pos().map(to_plan))
         {
             let (min, max) = ([a.x.min(b.x), a.y.min(b.y)], [a.x.max(b.x), a.y.max(b.y)]);
@@ -1792,7 +1965,7 @@ impl FloorTab {
         // middle or right button then.
         let panning = if self.tool == Tool::Aps {
             resp.dragged() && self.ap_drag.is_none()
-        } else if matches!(self.tool, Tool::Select | Tool::Align | Tool::ApSelect) {
+        } else if matches!(self.tool, Tool::Select | Tool::Align) {
             resp.dragged_by(egui::PointerButton::Middle) || resp.dragged_by(egui::PointerButton::Secondary)
         } else {
             resp.dragged()
@@ -1823,6 +1996,23 @@ impl FloorTab {
         let to_screen = |p: Pos2| rect.min + offset + p.to_vec2() * zoom;
         let to_plan = |s: Pos2| ((s - rect.min - offset) / zoom).to_pos2();
 
+        self.no_snap = ui.input(|i| i.modifiers.shift);
+        self.ensure_models();
+        if !ui.ctx().egui_wants_keyboard_input() && !ui.input(|i| i.modifiers.command || i.modifiers.alt) {
+            let keys = [
+                (egui::Key::S, Tool::Select),
+                (egui::Key::H, Tool::Pan),
+                (egui::Key::W, Tool::Walls),
+                (egui::Key::D, Tool::Aps),
+                (egui::Key::P, Tool::Survey),
+                (egui::Key::C, Tool::Scale),
+            ];
+            for (key, tool) in keys {
+                if ui.input(|i| i.key_pressed(key)) {
+                    self.set_tool(tool);
+                }
+            }
+        }
         if matches!(self.tool, Tool::Walls | Tool::Select) {
             let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
             if self.tool == Tool::Walls {
@@ -1835,6 +2025,7 @@ impl FloorTab {
                 }
             } else {
                 self.select_walls(&resp, ui, zoom, &to_plan);
+                self.ap_input(&resp, ui, zoom, &to_plan, &to_screen, (img_w, img_h));
                 if escape {
                     self.selected_walls.clear();
                 }
@@ -1850,7 +2041,7 @@ impl FloorTab {
             if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Z)) {
                 self.undo_walls();
             }
-        } else if matches!(self.tool, Tool::Aps | Tool::ApSelect) {
+        } else if self.tool == Tool::Aps {
             self.ap_input(&resp, ui, zoom, &to_plan, &to_screen, (img_w, img_h));
         } else if resp.clicked()
             && let Some(click) = resp.interact_pointer_pos()
@@ -1937,7 +2128,15 @@ impl FloorTab {
             let end = self.snapped(to_plan(hover), zoom);
             let ([r, g, b], width) = self.wall_material.style();
             let (a, c) = (to_screen(start), to_screen(end));
-            painter.line_segment([a, c], Stroke::new(width, Color32::from_rgb(r, g, b).gamma_multiply(0.7)));
+            let ghost = Stroke::new(width, Color32::from_rgb(r, g, b).gamma_multiply(0.7));
+            match self.wall_mode {
+                WallMode::Wall => {
+                    painter.line_segment([a, c], ghost);
+                }
+                WallMode::Room => {
+                    painter.rect_stroke(Rect::from_two_pos(a, c), 0.0, ghost, egui::StrokeKind::Middle);
+                }
+            }
             painter.circle_stroke(c, 6.0, Stroke::new(2.0, Color32::from_rgb(240, 140, 50)));
             let len_px = start.distance(end);
             let label = match floor.metres_per_px {
@@ -2004,14 +2203,6 @@ impl FloorTab {
             painter.text(c, egui::Align2::CENTER_CENTER, (i + 1).to_string(), egui::FontId::proportional(12.0), Color32::WHITE);
             painter.text(c + Vec2::new(15.0, -4.0), egui::Align2::LEFT_BOTTOM, format!("{}  {:.1} m", a.name, a.height_m), egui::FontId::proportional(12.0), Color32::BLACK);
         }
-        if self.tool == Tool::ApSelect
-            && let (Some(a), Some(b)) = (self.ap_box_start, ui.input(|i| i.pointer.hover_pos()))
-            && resp.dragged_by(egui::PointerButton::Primary)
-        {
-            let boxed = Rect::from_two_pos(to_screen(a), b);
-            let accent = theme::roles(ui.ctx()).primary;
-            painter.rect(boxed, 2.0, accent.gamma_multiply(0.15), Stroke::new(1.5, accent), egui::StrokeKind::Inside);
-        }
         if self.mode == WorkMode::Plan {
             if self.show_pred {
                 if let Some(note) = &self.pred_note {
@@ -2024,15 +2215,14 @@ impl FloorTab {
         if self.mode == WorkMode::Survey && self.show_heat {
             draw_legend(&painter, rect, &self.view);
         }
-        if matches!(self.tool, Tool::Walls | Tool::Select) {
-            for edit in self.wall_bubble(ui.ctx(), rect) {
-                self.apply_wall_edit(edit);
-            }
+        self.tool_bar(ui.ctx(), rect);
+        self.hint_banner(ui.ctx(), rect);
+        let (wall_edits, ap_edits) = self.right_panel(ui.ctx(), rect);
+        for edit in wall_edits {
+            self.apply_wall_edit(edit);
         }
-        if matches!(self.tool, Tool::Aps | Tool::ApSelect) {
-            for edit in self.ap_bubble(ui.ctx(), rect) {
-                self.apply_ap_edit(edit);
-            }
+        for edit in ap_edits {
+            self.apply_ap_edit(edit);
         }
         self.layers_button(ui.ctx(), rect);
         if self.floors_open {
@@ -2051,7 +2241,7 @@ impl FloorTab {
             return;
         }
         match self.tool {
-            Tool::Walls | Tool::Select | Tool::Align | Tool::Aps | Tool::ApSelect => {}
+            Tool::Walls | Tool::Select | Tool::Align | Tool::Aps | Tool::Pan => {}
             Tool::Scale => {
                 if self.scale_clicks.len() >= 2 {
                     self.scale_clicks.clear();
