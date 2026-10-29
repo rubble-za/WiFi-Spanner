@@ -35,12 +35,18 @@ impl Wall {
         self.height_m.unwrap_or(ceiling_m).clamp(0.0, ceiling_m.max(0.0))
     }
 
-    /// Distance in pixels from `p` to the nearest point of the wall.
-    pub fn distance_to(&self, p: [f32; 2]) -> f32 {
+    /// The point of the wall nearest to `p`.
+    pub fn closest_point(&self, p: [f32; 2]) -> [f32; 2] {
         let (dx, dy) = (self.b[0] - self.a[0], self.b[1] - self.a[1]);
         let len2 = dx * dx + dy * dy;
         let t = if len2 == 0.0 { 0.0 } else { (((p[0] - self.a[0]) * dx + (p[1] - self.a[1]) * dy) / len2).clamp(0.0, 1.0) };
-        (p[0] - (self.a[0] + t * dx)).hypot(p[1] - (self.a[1] + t * dy))
+        [self.a[0] + t * dx, self.a[1] + t * dy]
+    }
+
+    /// Distance in pixels from `p` to the nearest point of the wall.
+    pub fn distance_to(&self, p: [f32; 2]) -> f32 {
+        let c = self.closest_point(p);
+        (p[0] - c[0]).hypot(p[1] - c[1])
     }
 }
 
@@ -108,7 +114,9 @@ const MIN_PIECE_PX: f32 = 2.0;
 /// Where a wall being drawn should land.
 ///
 /// The end of a wall snaps to an existing wall end within `radius` pixels.
-/// Failing that, when there is a `start`, the direction snaps to the nearest
+/// Failing that it snaps onto the nearest wall within `radius`, anywhere
+/// along its length, so that a door or window drawn over a wall lies exactly
+/// on it. Failing that, when there is a `start`, the direction snaps to the nearest
 /// multiple of 15 degrees if within a few degrees of it, which keeps walls
 /// square and straight without forcing it.
 pub fn snap(p: [f32; 2], start: Option<[f32; 2]>, walls: &[Wall], radius: f32) -> [f32; 2] {
@@ -120,6 +128,14 @@ pub fn snap(p: [f32; 2], start: Option<[f32; 2]>, walls: &[Wall], radius: f32) -
         .min_by(|x, y| x.1.total_cmp(&y.1));
     if let Some((e, _)) = nearest {
         return e;
+    }
+    let along = walls
+        .iter()
+        .map(|w| (w.closest_point(p), w.distance_to(p)))
+        .filter(|(_, d)| *d <= radius)
+        .min_by(|x, y| x.1.total_cmp(&y.1));
+    if let Some((c, _)) = along {
+        return c;
     }
     let Some(s) = start else { return p };
     let (dx, dy) = (p[0] - s[0], p[1] - s[1]);
@@ -173,7 +189,20 @@ mod tests {
     fn ends_snap_to_existing_wall_ends_within_the_radius() {
         let walls = [wall([100.0, 100.0], [200.0, 100.0])];
         assert_eq!(snap([104.0, 97.0], None, &walls, 8.0), [100.0, 100.0]);
-        assert_eq!(snap([120.0, 97.0], None, &walls, 8.0), [120.0, 97.0], "too far from either end");
+        assert_eq!(snap([120.0, 97.0], None, &walls, 8.0), [120.0, 100.0], "mid-wall: onto the line, not an end");
+        assert_eq!(snap([120.0, 80.0], None, &walls, 8.0), [120.0, 80.0], "too far from the wall");
+    }
+
+    #[test]
+    fn points_snap_onto_the_line_of_a_nearby_wall() {
+        let walls = [wall([0.0, 0.0], [200.0, 0.0])];
+        assert_eq!(snap([80.0, 5.0], None, &walls, 8.0), [80.0, 0.0]);
+        assert_eq!(snap([80.0, 12.0], None, &walls, 8.0), [80.0, 12.0], "too far from the line");
+        assert_eq!(snap([3.0, 4.0], None, &walls, 8.0), [0.0, 0.0], "an end wins over the line");
+        // A door drawn along the wall now lies on it and replaces that stretch.
+        let (a, b) = (snap([60.0, 5.0], None, &walls, 8.0), snap([90.0, -6.0], Some(snap([60.0, 5.0], None, &walls, 8.0)), &walls, 8.0));
+        let door = Wall::new(a, b, Material::Wood);
+        assert_eq!(walls[0].carve(&door, 0.5).len(), 2);
     }
 
     #[test]

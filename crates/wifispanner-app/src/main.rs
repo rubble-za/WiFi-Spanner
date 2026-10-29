@@ -1001,6 +1001,10 @@ impl eframe::App for App {
                     ui.separator();
                     ui.colored_label(egui::Color32::LIGHT_RED, e);
                 }
+                // The plan's scale sits at the right end while a plan is open.
+                if self.tab == Tab::Surveying && !self.surveying_gallery {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| self.floor.scale_label(ui));
+                }
             });
         });
 

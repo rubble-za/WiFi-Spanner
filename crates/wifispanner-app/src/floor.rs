@@ -403,6 +403,32 @@ impl FloorTab {
         self.show_dialogs(ui.ctx());
     }
 
+    /// The plan's scale, for the status bar: how it is set, or why it looks wrong.
+    pub fn scale_label(&self, ui: &mut egui::Ui) {
+        let Some(f) = self.project.as_ref().map(|p| &p.floor) else { return };
+        let error = theme::roles(ui.ctx()).error;
+        let (text, colour, hover) = match f.metres_per_px {
+            Some(m) if !heatmap::scale_is_plausible(m, f.width_px, f.height_px) => (
+                "Scale looks wrong".to_string(),
+                Some(error),
+                Some(format!(
+                    "The scale makes this plan {:.0} m across. Choose Set scale and click two points a known distance apart to redo it.",
+                    f.width_px.max(f.height_px) as f32 * m
+                )),
+            ),
+            Some(m) => (format!("Scale: {:.1} px/m", 1.0 / m), None, None),
+            None => ("Scale not set".to_string(), Some(Color32::from_rgb(240, 140, 50)), None),
+        };
+        let mut rich = egui::RichText::new(text);
+        if let Some(c) = colour {
+            rich = rich.color(c);
+        }
+        let label = ui.add(egui::Label::new(rich).wrap_mode(egui::TextWrapMode::Extend));
+        if let Some(h) = hover {
+            label.on_hover_text(h);
+        }
+    }
+
     /// The scale and PDF page dialogs, shown whichever view is up.
     pub fn show_dialogs(&mut self, ctx: &egui::Context) {
         self.scale_dialog(ctx);
@@ -484,19 +510,6 @@ impl FloorTab {
                     self.wall_start = None;
                 }
             });
-            if let Some(f) = self.project.as_ref().map(|p| &p.floor) {
-                ui.separator();
-                match f.metres_per_px {
-                    Some(m) if !heatmap::scale_is_plausible(m, f.width_px, f.height_px) => ui
-                        .add(egui::Label::new(egui::RichText::new("Scale looks wrong").color(theme::roles(ui.ctx()).error)).wrap_mode(egui::TextWrapMode::Extend))
-                        .on_hover_text(format!(
-                            "The scale makes this plan {:.0} m across. Choose Set scale and click two points a known distance apart to redo it.",
-                            f.width_px.max(f.height_px) as f32 * m
-                        )),
-                    Some(m) => ui.add(egui::Label::new(format!("Scale: {:.1} px/m", 1.0 / m)).wrap_mode(egui::TextWrapMode::Extend)),
-                    None => ui.add(egui::Label::new(egui::RichText::new("Scale not set").color(Color32::from_rgb(240, 140, 50))).wrap_mode(egui::TextWrapMode::Extend)),
-                };
-            }
         });
 
         let Some(floor) = self.project.as_ref().map(|p| &p.floor) else { return };
