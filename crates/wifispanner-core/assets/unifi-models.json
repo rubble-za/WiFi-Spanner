@@ -1,0 +1,732 @@
+[
+ {
+  "vendor": "Ubiquiti",
+  "name": "UniFi E7",
+  "note": "WiFi 7, Ceiling, Wall; 6 GHz at 24 dBm (30 dBm in standard-power mode)",
+  "radios": [
+   {
+    "band": "Ghz2_4",
+    "tx_dbm": 23.0,
+    "gain_dbi": 5.0
+   },
+   {
+    "band": "Ghz5",
+    "tx_dbm": 30.0,
+    "gain_dbi": 6.0
+   },
+   {
+    "band": "Ghz6",
+    "tx_dbm": 24.0,
+    "gain_dbi": 6.0
+   }
+  ],
+  "verified": true
+ },
+ {
+  "vendor": "Ubiquiti",
+  "name": "UniFi E7 Audience Indoor",
+  "note": "WiFi 7, Wall, Pole; directional, check regional EIRP limits",
+  "radios": [
+   {
+    "band": "Ghz5",
+    "tx_dbm": 30.0,
+    "gain_dbi": 15.0
+   },
+   {
+    "band": "Ghz6",
+    "tx_dbm": 30.0,
+    "gain_dbi": 15.0,
+    "eirp_cap_dbm": 36.0
+   }
+  ],
+  "verified": true
+ },
+ {
+  "vendor": "Ubiquiti",
+  "name": "UniFi E7 Audience",
+  "note": "WiFi 7, Wall, Pole; directional, check regional EIRP limits",
+  "radios": [
+   {
+    "band": "Ghz5",
+    "tx_dbm": 30.0,
+    "gain_dbi": 15.0
+   },
+   {
+    "band": "Ghz6",
+    "tx_dbm": 30.0,
+    "gain_dbi": 15.0,
+    "eirp_cap_dbm": 36.0
+   }
+  ],
+  "verified": true
+ },
+ {
+  "vendor": "Ubiquiti",
+  "name": "UniFi E7 Campus Indoor",
+  "note": "WiFi 7, Wall, Pole; directional, check regional EIRP limits",
+  "radios": [
+   {
+    "band": "Ghz2_4",
+    "tx_dbm": 23.0,
+    "gain_dbi": 9.0
+   },
+   {
+    "band": "Ghz5",
+    "tx_dbm": 30.0,
+    "gain_dbi": 12.0
+   },
+   {
+    "band": "Ghz6",
+    "tx_dbm": 30.0,
+    "gain_dbi": 12.0,
+    "eirp_cap_dbm": 36.0
+   }
+  ],
+  "verified": true
+ },
+ {
+  "vendor": "Ubiquiti",
+  "name": "UniFi E7 Campus",
+  "note": "WiFi 7, Wall, Pole; directional, check regional EIRP limits",
+  "radios": [
+   {
+    "band": "Ghz2_4",
+    "tx_dbm": 23.0,
+    "gain_dbi": 9.0
+   },
+   {
+    "band": "Ghz5",
+    "tx_dbm": 30.0,
+    "gain_dbi": 12.0
+   },
+   {
+    "band": "Ghz6",
+    "tx_dbm": 30.0,
+    "gain_dbi": 12.0,
+    "eirp_cap_dbm": 36.0
+   }
+  ],
+  "verified": true
+ },
+ {
+  "vendor": "Ubiquiti",
+  "name": "UniFi U6 Enterprise",
+  "note": "WiFi 6E, Ceiling, Wall",
+  "radios": [
+   {
+    "band": "Ghz2_4",
+    "tx_dbm": 22.0,
+    "gain_dbi": 3.2
+   },
+   {
+    "band": "Ghz5",
+    "tx_dbm": 26.0,
+    "gain_dbi": 5.3
+   },
+   {
+    "band": "Ghz6",
+    "tx_dbm": 26.0,
+    "gain_dbi": 6.0
+   }
+  ],
+  "verified": true
+ },
+ {
+  "vendor": "Ubiquiti",
+  "name": "UniFi U6 Enterprise In-Wall",
+  "note": "WiFi 6E, Wall",
+  "radios": [
+   {
+    "band": "Ghz2_4",
+    "tx_dbm": 22.0,
+    "gain_dbi": 4.0
+   },
+   {
+    "band": "Ghz5",
+    "tx_dbm": 26.0,
+    "gain_dbi": 5.8
+   },
+   {
+    "band": "Ghz6",
+    "tx_dbm": 26.0,
+    "gain_dbi": 5.8
+   }
+  ],
+  "verified": true
+ },
+ {
+  "vendor": "Ubiquiti",
+  "name": "UniFi U6 Extender",
+  "note": "WiFi 6, Wall",
+  "radios": [
+   {
+    "band": "Ghz2_4",
+    "tx_dbm": 22.0,
+    "gain_dbi": 5.0
+   },
+   {
+    "band": "Ghz5",
+    "tx_dbm": 26.0,
+    "gain_dbi": 6.0
+   }
+  ],
+  "verified": true
+ },
+ {
+  "vendor": "Ubiquiti",
+  "name": "UniFi U6 In-Wall",
+  "note": "WiFi 6, Wall",
+  "radios": [
+   {
+    "band": "Ghz2_4",
+    "tx_dbm": 22.0,
+    "gain_dbi": 5.0
+   },
+   {
+    "band": "Ghz5",
+    "tx_dbm": 26.0,
+    "gain_dbi": 5.9
+   }
+  ],
+  "verified": true
+ },
+ {
+  "vendor": "Ubiquiti",
+  "name": "UniFi U6 Long-Range",
+  "note": "WiFi 6, Ceiling, Wall",
+  "radios": [
+   {
+    "band": "Ghz2_4",
+    "tx_dbm": 26.0,
+    "gain_dbi": 4.0
+   },
+   {
+    "band": "Ghz5",
+    "tx_dbm": 26.0,
+    "gain_dbi": 5.5
+   }
+  ],
+  "verified": true
+ },
+ {
+  "vendor": "Ubiquiti",
+  "name": "UniFi U6 Mesh",
+  "note": "WiFi 6, Wall, Pole, Tabletop",
+  "radios": [
+   {
+    "band": "Ghz2_4",
+    "tx_dbm": 22.0,
+    "gain_dbi": 3.0
+   },
+   {
+    "band": "Ghz5",
+    "tx_dbm": 26.0,
+    "gain_dbi": 5.0
+   }
+  ],
+  "verified": true
+ },
+ {
+  "vendor": "Ubiquiti",
+  "name": "UniFi U6 Mesh Pro",
+  "note": "WiFi 6, Wall, Pole",
+  "radios": [
+   {
+    "band": "Ghz2_4",
+    "tx_dbm": 22.0,
+    "gain_dbi": 8.0
+   },
+   {
+    "band": "Ghz5",
+    "tx_dbm": 27.0,
+    "gain_dbi": 8.0
+   }
+  ],
+  "verified": true
+ },
+ {
+  "vendor": "Ubiquiti",
+  "name": "UniFi U6+",
+  "note": "WiFi 6, Ceiling, Wall",
+  "radios": [
+   {
+    "band": "Ghz2_4",
+    "tx_dbm": 23.0,
+    "gain_dbi": 3.0
+   },
+   {
+    "band": "Ghz5",
+    "tx_dbm": 23.0,
+    "gain_dbi": 5.4
+   }
+  ],
+  "verified": true
+ },
+ {
+  "vendor": "Ubiquiti",
+  "name": "UniFi U6 Pro",
+  "note": "WiFi 6, Ceiling, Wall",
+  "radios": [
+   {
+    "band": "Ghz2_4",
+    "tx_dbm": 22.0,
+    "gain_dbi": 4.0
+   },
+   {
+    "band": "Ghz5",
+    "tx_dbm": 26.0,
+    "gain_dbi": 6.0
+   }
+  ],
+  "verified": true
+ },
+ {
+  "vendor": "Ubiquiti",
+  "name": "UniFi U7 Industrial",
+  "note": "WiFi 7, Wall, Pole; directional, check regional EIRP limits",
+  "radios": [
+   {
+    "band": "Ghz2_4",
+    "tx_dbm": 23.0,
+    "gain_dbi": 8.0
+   },
+   {
+    "band": "Ghz5",
+    "tx_dbm": 24.0,
+    "gain_dbi": 10.0
+   }
+  ],
+  "verified": true
+ },
+ {
+  "vendor": "Ubiquiti",
+  "name": "UniFi U7 In-Wall",
+  "note": "WiFi 7, Wall",
+  "radios": [
+   {
+    "band": "Ghz2_4",
+    "tx_dbm": 23.0,
+    "gain_dbi": 4.0
+   },
+   {
+    "band": "Ghz5",
+    "tx_dbm": 24.0,
+    "gain_dbi": 8.0
+   }
+  ],
+  "verified": true
+ },
+ {
+  "vendor": "Ubiquiti",
+  "name": "UniFi U7 Lite",
+  "note": "WiFi 7, Ceiling, Wall",
+  "radios": [
+   {
+    "band": "Ghz2_4",
+    "tx_dbm": 23.0,
+    "gain_dbi": 4.0
+   },
+   {
+    "band": "Ghz5",
+    "tx_dbm": 24.0,
+    "gain_dbi": 5.0
+   }
+  ],
+  "verified": true
+ },
+ {
+  "vendor": "Ubiquiti",
+  "name": "UniFi U7 Long-Range",
+  "note": "WiFi 7, Ceiling, Wall",
+  "radios": [
+   {
+    "band": "Ghz2_4",
+    "tx_dbm": 26.0,
+    "gain_dbi": 4.0
+   },
+   {
+    "band": "Ghz5",
+    "tx_dbm": 27.0,
+    "gain_dbi": 6.0
+   }
+  ],
+  "verified": true
+ },
+ {
+  "vendor": "Ubiquiti",
+  "name": "UniFi U7 Mesh",
+  "note": "WiFi 7, Wall, Pole, Table stand",
+  "radios": [
+   {
+    "band": "Ghz2_4",
+    "tx_dbm": 23.0,
+    "gain_dbi": 3.0
+   },
+   {
+    "band": "Ghz5",
+    "tx_dbm": 24.0,
+    "gain_dbi": 6.0
+   }
+  ],
+  "verified": true
+ },
+ {
+  "vendor": "Ubiquiti",
+  "name": "UniFi U7 Outdoor",
+  "note": "WiFi 7, Wall, Pole; directional, check regional EIRP limits",
+  "radios": [
+   {
+    "band": "Ghz2_4",
+    "tx_dbm": 23.0,
+    "gain_dbi": 8.0
+   },
+   {
+    "band": "Ghz5",
+    "tx_dbm": 26.0,
+    "gain_dbi": 12.5
+   }
+  ],
+  "verified": true
+ },
+ {
+  "vendor": "Ubiquiti",
+  "name": "UniFi U7 Pro",
+  "note": "WiFi 7, Ceiling, Wall",
+  "radios": [
+   {
+    "band": "Ghz2_4",
+    "tx_dbm": 23.0,
+    "gain_dbi": 4.0
+   },
+   {
+    "band": "Ghz5",
+    "tx_dbm": 26.0,
+    "gain_dbi": 6.0
+   },
+   {
+    "band": "Ghz6",
+    "tx_dbm": 23.0,
+    "gain_dbi": 5.8
+   }
+  ],
+  "verified": true
+ },
+ {
+  "vendor": "Ubiquiti",
+  "name": "UniFi U7 Pro Max",
+  "note": "WiFi 7, Ceiling, Wall",
+  "radios": [
+   {
+    "band": "Ghz2_4",
+    "tx_dbm": 23.0,
+    "gain_dbi": 4.0
+   },
+   {
+    "band": "Ghz5",
+    "tx_dbm": 29.0,
+    "gain_dbi": 6.0
+   },
+   {
+    "band": "Ghz6",
+    "tx_dbm": 23.0,
+    "gain_dbi": 5.9
+   }
+  ],
+  "verified": true
+ },
+ {
+  "vendor": "Ubiquiti",
+  "name": "UniFi U7 Pro Outdoor",
+  "note": "WiFi 7, Wall, Pole; directional, check regional EIRP limits",
+  "radios": [
+   {
+    "band": "Ghz2_4",
+    "tx_dbm": 23.0,
+    "gain_dbi": 8.0
+   },
+   {
+    "band": "Ghz5",
+    "tx_dbm": 26.0,
+    "gain_dbi": 11.0
+   },
+   {
+    "band": "Ghz6",
+    "tx_dbm": 26.0,
+    "gain_dbi": 10.0
+   }
+  ],
+  "verified": true
+ },
+ {
+  "vendor": "Ubiquiti",
+  "name": "UniFi U7 Pro Wall",
+  "note": "WiFi 7, Wall",
+  "radios": [
+   {
+    "band": "Ghz2_4",
+    "tx_dbm": 22.0,
+    "gain_dbi": 4.0
+   },
+   {
+    "band": "Ghz5",
+    "tx_dbm": 26.0,
+    "gain_dbi": 5.0
+   },
+   {
+    "band": "Ghz6",
+    "tx_dbm": 23.0,
+    "gain_dbi": 6.0
+   }
+  ],
+  "verified": true
+ },
+ {
+  "vendor": "Ubiquiti",
+  "name": "UniFi U7 Pro XG",
+  "note": "WiFi 7, Ceiling, Wall",
+  "radios": [
+   {
+    "band": "Ghz2_4",
+    "tx_dbm": 23.0,
+    "gain_dbi": 4.0
+   },
+   {
+    "band": "Ghz5",
+    "tx_dbm": 26.0,
+    "gain_dbi": 5.0
+   },
+   {
+    "band": "Ghz6",
+    "tx_dbm": 24.0,
+    "gain_dbi": 6.0
+   }
+  ],
+  "verified": true
+ },
+ {
+  "vendor": "Ubiquiti",
+  "name": "UniFi U7 Pro XG Wall",
+  "note": "WiFi 7, Wall",
+  "radios": [
+   {
+    "band": "Ghz2_4",
+    "tx_dbm": 23.0,
+    "gain_dbi": 4.0
+   },
+   {
+    "band": "Ghz5",
+    "tx_dbm": 26.0,
+    "gain_dbi": 6.0
+   },
+   {
+    "band": "Ghz6",
+    "tx_dbm": 24.0,
+    "gain_dbi": 6.0
+   }
+  ],
+  "verified": true
+ },
+ {
+  "vendor": "Ubiquiti",
+  "name": "UniFi U7 Pro XGS",
+  "note": "WiFi 7, Ceiling, Wall",
+  "radios": [
+   {
+    "band": "Ghz2_4",
+    "tx_dbm": 23.0,
+    "gain_dbi": 4.0
+   },
+   {
+    "band": "Ghz5",
+    "tx_dbm": 29.0,
+    "gain_dbi": 6.0
+   },
+   {
+    "band": "Ghz6",
+    "tx_dbm": 24.0,
+    "gain_dbi": 6.0
+   }
+  ],
+  "verified": true
+ },
+ {
+  "vendor": "Ubiquiti",
+  "name": "UniFi AC In-Wall",
+  "note": "WiFi 5, Wall",
+  "radios": [
+   {
+    "band": "Ghz2_4",
+    "tx_dbm": 20.0,
+    "gain_dbi": 1.0
+   },
+   {
+    "band": "Ghz5",
+    "tx_dbm": 20.0,
+    "gain_dbi": 2.0
+   }
+  ],
+  "verified": true
+ },
+ {
+  "vendor": "Ubiquiti",
+  "name": "UniFi AC Lite",
+  "note": "WiFi 5, Ceiling, Wall",
+  "radios": [
+   {
+    "band": "Ghz2_4",
+    "tx_dbm": 20.0,
+    "gain_dbi": 3.0
+   },
+   {
+    "band": "Ghz5",
+    "tx_dbm": 20.0,
+    "gain_dbi": 3.0
+   }
+  ],
+  "verified": true
+ },
+ {
+  "vendor": "Ubiquiti",
+  "name": "UniFi AC Mesh",
+  "note": "WiFi 5, Wall, Pole",
+  "radios": [
+   {
+    "band": "Ghz2_4",
+    "tx_dbm": 20.0,
+    "gain_dbi": 3.0
+   },
+   {
+    "band": "Ghz5",
+    "tx_dbm": 20.0,
+    "gain_dbi": 4.0
+   }
+  ],
+  "verified": true
+ },
+ {
+  "vendor": "Ubiquiti",
+  "name": "UniFi AC Mesh Pro",
+  "note": "WiFi 5, Wall, Pole",
+  "radios": [
+   {
+    "band": "Ghz2_4",
+    "tx_dbm": 22.0,
+    "gain_dbi": 8.0
+   },
+   {
+    "band": "Ghz5",
+    "tx_dbm": 22.0,
+    "gain_dbi": 8.0
+   }
+  ],
+  "verified": true
+ },
+ {
+  "vendor": "Ubiquiti",
+  "name": "UniFi AC Pro",
+  "note": "WiFi 5, Ceiling, Wall",
+  "radios": [
+   {
+    "band": "Ghz2_4",
+    "tx_dbm": 22.0,
+    "gain_dbi": 3.0
+   },
+   {
+    "band": "Ghz5",
+    "tx_dbm": 22.0,
+    "gain_dbi": 3.0
+   }
+  ],
+  "verified": true
+ },
+ {
+  "vendor": "Ubiquiti",
+  "name": "UniFi In-Wall HD",
+  "note": "WiFi 5, Wall",
+  "radios": [
+   {
+    "band": "Ghz2_4",
+    "tx_dbm": 23.0,
+    "gain_dbi": 1.8
+   },
+   {
+    "band": "Ghz5",
+    "tx_dbm": 26.0,
+    "gain_dbi": 4.0
+   }
+  ],
+  "verified": true
+ },
+ {
+  "vendor": "Ubiquiti",
+  "name": "UniFi Swiss Army Knife",
+  "note": "WiFi 5, Ceiling, Wall, Pole, Table",
+  "radios": [
+   {
+    "band": "Ghz2_4",
+    "tx_dbm": 20.0,
+    "gain_dbi": 4.7
+   },
+   {
+    "band": "Ghz5",
+    "tx_dbm": 20.0,
+    "gain_dbi": 6.1
+   }
+  ],
+  "verified": true
+ },
+ {
+  "vendor": "Ubiquiti",
+  "name": "UniFi AC Long-Range",
+  "note": "WiFi 5, Ceiling, Wall Mount",
+  "radios": [
+   {
+    "band": "Ghz2_4",
+    "tx_dbm": 24.0,
+    "gain_dbi": 3.0
+   },
+   {
+    "band": "Ghz5",
+    "tx_dbm": 22.0,
+    "gain_dbi": 3.0
+   }
+  ],
+  "verified": true
+ },
+ {
+  "vendor": "Ubiquiti",
+  "name": "UniFi WiFi BaseStation XG",
+  "note": "WiFi 5, Wall, Pole; directional, check regional EIRP limits",
+  "radios": [
+   {
+    "band": "Ghz5",
+    "tx_dbm": 25.0,
+    "gain_dbi": 15.0
+   }
+  ],
+  "verified": true
+ },
+ {
+  "vendor": "Ubiquiti",
+  "name": "UniFi Express 7",
+  "note": "WiFi 7 gateway with built-in AP",
+  "radios": [
+   {
+    "band": "Ghz2_4",
+    "tx_dbm": 23.0,
+    "gain_dbi": 4.0
+   },
+   {
+    "band": "Ghz5",
+    "tx_dbm": 26.0,
+    "gain_dbi": 7.0
+   },
+   {
+    "band": "Ghz6",
+    "tx_dbm": 24.0,
+    "gain_dbi": 6.0
+   }
+  ],
+  "verified": true
+ }
+]

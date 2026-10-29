@@ -985,7 +985,7 @@ impl FloorTab {
                 if let [i] = selected[..] {
                     let ap = &fl.aps[i];
                     let radios = if ap.radios.is_empty() {
-                        vec![Radio { band: RadioBand::Ghz2_4, tx_dbm: ap.tx_dbm, gain_dbi: ap.gain_dbi }, Radio { band: RadioBand::Ghz5, tx_dbm: ap.tx_dbm, gain_dbi: ap.gain_dbi }]
+                        vec![Radio { band: RadioBand::Ghz2_4, tx_dbm: ap.tx_dbm, gain_dbi: ap.gain_dbi, eirp_cap_dbm: None }, Radio { band: RadioBand::Ghz5, tx_dbm: ap.tx_dbm, gain_dbi: ap.gain_dbi, eirp_cap_dbm: None }]
                     } else {
                         ap.radios.clone()
                     };
@@ -1145,7 +1145,7 @@ impl FloorTab {
                                     RadioBand::Ghz5 => "5 GHz",
                                     RadioBand::Ghz6 => "6 GHz",
                                 };
-                                ui.label(egui::RichText::new(format!("{band}:  {:.0} dBm + {:.1} dBi", rd.tx_dbm, rd.gain_dbi)).size(13.0));
+                                ui.label(egui::RichText::new(format!("{band}:  {:.0} dBm + {:.1} dBi{}", rd.tx_dbm, rd.gain_dbi, rd.eirp_cap_dbm.map_or(String::new(), |c| format!(" (max {c:.0} dBm EIRP)")))).size(13.0));
                             }
                             if ui.small_button("Use custom power instead").clicked() {
                                 edits.push(ApEdit::Custom);

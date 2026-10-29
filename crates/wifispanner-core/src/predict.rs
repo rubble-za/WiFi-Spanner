@@ -50,6 +50,10 @@ pub struct Radio {
     pub band: RadioBand,
     pub tx_dbm: f32,
     pub gain_dbi: f32,
+    /// The most the radio may radiate (transmit power plus gain) where a
+    /// regulatory limit is below that sum.
+    #[serde(default)]
+    pub eirp_cap_dbm: Option<f32>,
 }
 
 /// An access point on the plan: one that is really there, or one being planned.
@@ -102,6 +106,14 @@ impl PlannedAp {
             radios: Vec::new(),
             link: None,
         }
+    }
+
+    /// What the access point radiates on a band (power plus gain, held to the
+    /// radio's regulatory cap), or `None` when it has no radio there.
+    pub fn eirp_dbm(&self, band: Band) -> Option<f32> {
+        let (tx, gain) = self.radio(band)?;
+        let cap = self.radios.iter().find(|r| r.band == RadioBand::from_band(band)).and_then(|r| r.eirp_cap_dbm);
+        Some(cap.map_or(tx + gain, |c| (tx + gain).min(c)))
     }
 
     /// Transmit power and antenna gain on a band, or `None` when the access
@@ -218,7 +230,7 @@ impl std::fmt::Display for Unavailable {
 pub fn predict(floor: &Floor, band: Band, rx_height_m: f32) -> Result<Grid, Unavailable> {
     let mpp = floor.metres_per_px.filter(|m| m.is_finite() && *m > 0.0).ok_or(Unavailable::NoScale)?;
     // Enabled access points with a radio on this band, and what each radiates.
-    let aps: Vec<(&PlannedAp, f32)> = floor.aps.iter().filter(|a| a.enabled).filter_map(|a| a.radio(band).map(|(tx, gain)| (a, tx + gain))).collect();
+    let aps: Vec<(&PlannedAp, f32)> = floor.aps.iter().filter(|a| a.enabled).filter_map(|a| a.eirp_dbm(band).map(|eirp| (a, eirp))).collect();
     if aps.is_empty() {
         return Err(Unavailable::NoAps);
     }
@@ -333,18 +345,20 @@ mod tests {
     fn an_ap_only_covers_the_bands_it_has_radios_for() {
         let mut dual = ap(100.0, 50.0, 2.7);
         dual.radios = vec![
-            Radio { band: RadioBand::Ghz2_4, tx_dbm: 22.0, gain_dbi: 4.0 },
-            Radio { band: RadioBand::Ghz5, tx_dbm: 26.0, gain_dbi: 6.0 },
+            Radio { band: RadioBand::Ghz2_4, tx_dbm: 22.0, gain_dbi: 4.0, eirp_cap_dbm: None },
+            Radio { band: RadioBand::Ghz5, tx_dbm: 26.0, gain_dbi: 6.0, eirp_cap_dbm: Some(30.0) },
         ];
         assert_eq!(dual.radio(Band::Ghz5), Some((26.0, 6.0)));
         assert_eq!(dual.radio(Band::Ghz6), None);
         let f = floor(vec![dual.clone()], vec![]);
         assert!(predict(&f, Band::Ghz5, 1.0).is_ok());
         assert_eq!(predict(&f, Band::Ghz6, 1.0).unwrap_err(), Unavailable::NoAps, "no 6 GHz radio");
-        // The 5 GHz radio is 9 dB hotter than a plain AP's 20 dBm + 3 dBi.
+        // The 5 GHz radio is capped at 30 dBm EIRP.
         let plain = floor(vec![ap(100.0, 50.0, 2.7)], vec![]);
         let diff = at(&predict(&f, Band::Ghz5, 1.0).unwrap(), 0.1, 12.0, 5.0) - at(&predict(&plain, Band::Ghz5, 1.0).unwrap(), 0.1, 12.0, 5.0);
-        assert!((diff - 9.0).abs() < 0.01, "{diff}");
+        // 26 + 6 = 32 dBm, held to the 30 dBm cap, against the plain AP's 23.
+        assert!((diff - 7.0).abs() < 0.01, "{diff}");
+        assert_eq!(dual.eirp_dbm(Band::Ghz2_4), Some(26.0));
     }
 
     #[test]

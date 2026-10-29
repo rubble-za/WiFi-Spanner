@@ -38,19 +38,28 @@ impl ApModel {
 }
 
 fn radio(band: RadioBand, tx_dbm: f32, gain_dbi: f32) -> Radio {
-    Radio { band, tx_dbm, gain_dbi }
+    Radio { band, tx_dbm, gain_dbi, eirp_cap_dbm: None }
 }
 
 fn model(vendor: &str, name: &str, note: &str, radios: Vec<Radio>, verified: bool) -> ApModel {
     ApModel { vendor: vendor.into(), name: name.into(), note: note.into(), radios, verified }
 }
 
+/// Ubiquiti's access points, read from the specification pages on
+/// techspecs.ui.com on 2026-10-29 (maximum transmit power and the antenna
+/// gain of the built-in antenna, per band).
+const UNIFI: &str = include_str!("../assets/unifi-models.json");
+
 /// The models that come with the app.
 pub fn builtin() -> Vec<ApModel> {
+    let mut models: Vec<ApModel> = serde_json::from_str(UNIFI).expect("the bundled Ubiquiti models are valid");
+    models.extend(generic());
+    models
+}
+
+fn generic() -> Vec<ApModel> {
     use RadioBand::*;
     vec![
-        // Checked against Ubiquiti's published specifications.
-        model("Ubiquiti", "UniFi U7 Pro", "Wi-Fi 7, 2.4 + 5 + 6 GHz, ceiling", vec![radio(Ghz2_4, 23.0, 4.0), radio(Ghz5, 26.0, 6.0), radio(Ghz6, 23.0, 5.8)], true),
         // Typical values for a class of device.
         model("Generic", "Wi-Fi 5 dual-band ceiling AP", "Wi-Fi 5, 2.4 + 5 GHz", vec![radio(Ghz2_4, 20.0, 3.0), radio(Ghz5, 20.0, 4.0)], false),
         model("Generic", "Wi-Fi 6 dual-band ceiling AP", "Wi-Fi 6, 2.4 + 5 GHz", vec![radio(Ghz2_4, 22.0, 4.0), radio(Ghz5, 23.0, 5.0)], false),
@@ -89,7 +98,8 @@ mod tests {
     #[test]
     fn search_needs_every_word_and_ignores_case() {
         let all = builtin();
-        assert_eq!(search(&all, "u7 PRO").len(), 1);
+        assert!(search(&all, "u7 PRO").iter().any(|m| m.name == "UniFi U7 Pro"));
+        assert!(search(&all, "u7 pro").len() > 1, "the whole U7 Pro family matches");
         assert!(search(&all, "").len() == all.len());
         assert!(search(&all, "generic 6e").iter().all(|m| m.vendor == "Generic" && m.bands().contains(&RadioBand::Ghz6)));
         assert!(search(&all, "nonexistent").is_empty());
@@ -99,7 +109,7 @@ mod tests {
     fn built_in_models_are_sane_and_only_checked_ones_say_so() {
         for m in builtin() {
             assert!(!m.radios.is_empty(), "{}", m.id());
-            assert!(m.radios.iter().all(|r| (5.0..=36.0).contains(&r.tx_dbm) && (0.0..=15.0).contains(&r.gain_dbi)), "{}", m.id());
+            assert!(m.radios.iter().all(|r| (5.0..=36.0).contains(&r.tx_dbm) && (0.0..=20.0).contains(&r.gain_dbi)), "{}", m.id());
             let mut bands = m.bands();
             bands.dedup();
             assert_eq!(bands.len(), m.radios.len(), "one radio per band: {}", m.id());
@@ -108,8 +118,21 @@ mod tests {
     }
 
     #[test]
+    fn the_ubiquiti_models_match_what_their_pages_say() {
+        let all = builtin();
+        let find = |name: &str| all.iter().find(|m| m.name == name).unwrap_or_else(|| panic!("{name}")).clone();
+        let u7 = find("UniFi U7 Pro");
+        assert_eq!(u7.radios.iter().map(|r| (r.band, r.tx_dbm, r.gain_dbi)).collect::<Vec<_>>(), vec![(RadioBand::Ghz2_4, 23.0, 4.0), (RadioBand::Ghz5, 26.0, 6.0), (RadioBand::Ghz6, 23.0, 5.8)]);
+        assert!(find("UniFi U6 Pro").radios.iter().all(|r| r.band != RadioBand::Ghz6), "Wi-Fi 6 has no 6 GHz radio");
+        let campus = find("UniFi E7 Campus");
+        assert_eq!(campus.radios.iter().find(|r| r.band == RadioBand::Ghz6).unwrap().eirp_cap_dbm, Some(36.0), "its 30 dBm + 12 dBi is held to 36 dBm EIRP");
+        assert!(all.iter().filter(|m| m.vendor == "Ubiquiti").count() >= 35);
+        assert!(all.iter().filter(|m| m.vendor == "Ubiquiti").all(|m| m.verified));
+    }
+
+    #[test]
     fn a_users_model_replaces_a_built_in_of_the_same_name() {
-        let mine = ApModel { radios: vec![Radio { band: RadioBand::Ghz5, tx_dbm: 10.0, gain_dbi: 1.0 }], ..builtin().remove(0) };
+        let mine = ApModel { radios: vec![Radio { band: RadioBand::Ghz5, tx_dbm: 10.0, gain_dbi: 1.0, eirp_cap_dbm: None }], ..builtin().remove(0) };
         let all = merged(vec![mine.clone()]);
         assert_eq!(all.iter().filter(|m| m.id() == mine.id()).count(), 1);
         assert_eq!(all.last().unwrap().radios.len(), 1);
