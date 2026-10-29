@@ -45,6 +45,16 @@ pub struct Floor {
     /// Set by calibrating against a known distance.
     pub metres_per_px: Option<f32>,
     pub points: Vec<SurveyPoint>,
+    /// Walls drawn on the plan. Older projects have none.
+    #[serde(default)]
+    pub walls: Vec<crate::walls::Wall>,
+    /// Ceiling height in metres, the height of a full-height wall.
+    #[serde(default = "default_ceiling")]
+    pub ceiling_m: f32,
+}
+
+fn default_ceiling() -> f32 {
+    crate::walls::DEFAULT_CEILING_M
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -207,6 +217,14 @@ mod tests {
     }
 
     #[test]
+    fn projects_saved_before_walls_still_open() {
+        let old = r#"{"version":1,"floor":{"name":"x","image":"","width_px":1,"height_px":1,"metres_per_px":null,"points":[]}}"#;
+        let p = Project::from_json(old).unwrap();
+        assert!(p.floor.walls.is_empty());
+        assert_eq!(p.floor.ceiling_m, crate::walls::DEFAULT_CEILING_M);
+    }
+
+    #[test]
     fn bssids_of_one_radio_share_a_key() {
         let key = |b: &str| ap_key(b, Band::Ghz5);
         assert_eq!(key("50:3d:d1:e7:4c:cc"), key("52:3d:d1:e7:4c:ce"), "other SSIDs of the same radio");
@@ -240,8 +258,12 @@ mod tests {
             height_px: 20,
             metres_per_px: Some(0.05),
             points: vec![point()],
+            walls: vec![crate::walls::Wall::new([1.0, 2.0], [3.0, 4.0], crate::Material::Metal)],
+            ceiling_m: 4.5,
         };
         let back = Project::from_json(&Project::new(floor).to_json().unwrap()).unwrap();
+        assert_eq!(back.floor.walls.len(), 1);
+        assert_eq!(back.floor.ceiling_m, 4.5);
         assert_eq!(back.floor.image, vec![0, 1, 2, 255]);
         assert_eq!(back.floor.points[0].observations.len(), 3);
         assert_eq!(back.floor.metres_per_px, Some(0.05));

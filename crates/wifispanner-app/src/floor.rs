@@ -10,11 +10,13 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, Vec2};
 use wifispanner_core::heatmap::{self, Sample};
 use wifispanner_core::survey::{Floor, Project, SurveyPoint, Target};
+use wifispanner_core::walls::{self, Wall};
+use wifispanner_core::Material;
 use wifispanner_scan::{Band, ScanResult};
 
 use crate::settings::Settings;
 use crate::theme::{self, ButtonKind};
-use egui_material_icons::icons::{ICON_ARROW_BACK, ICON_DELETE, ICON_DESCRIPTION, ICON_FOLDER_OPEN, ICON_IMAGE, ICON_PLACE, ICON_SAVE, ICON_STRAIGHTEN};
+use egui_material_icons::icons::{ICON_ARCHITECTURE, ICON_ARROW_BACK, ICON_DELETE, ICON_DESCRIPTION, ICON_FOLDER_OPEN, ICON_IMAGE, ICON_PLACE, ICON_SAVE, ICON_STRAIGHTEN, ICON_UNDO};
 use crate::{Cmd, pdf, report, store};
 use crate::live::signal_color;
 
@@ -30,6 +32,7 @@ pub struct Env<'a> {
 enum Tool {
     Survey,
     Scale,
+    Walls,
 }
 
 /// Textures are capped at this size per side; positions stay in plan pixels.
@@ -49,6 +52,8 @@ const HEAT_CELLS: usize = 256;
 const MIN_SCALE_PX: f32 = 25.0;
 /// A click this close (screen pixels) to a marker selects it instead of scanning.
 const PICK_RADIUS: f32 = 10.0;
+/// A wall end snaps to another wall's end this close (screen pixels).
+const WALL_SNAP_PX: f32 = 12.0;
 
 /// The scale (metres per plan pixel) implied by `metres` between two points
 /// `px_apart` pixels apart on a plan of `w` x `h` pixels, or why it is not
@@ -94,6 +99,12 @@ pub struct FloorTab {
     /// Display settings from the settings dialog, copied in each frame.
     view: Settings,
     pdf_picker: Option<PdfPicker>,
+    /// Wall drawing: the material and height for the next wall, where the wall
+    /// being drawn started, and the wall picked in the list.
+    wall_material: Material,
+    wall_height: Option<f32>,
+    wall_start: Option<Pos2>,
+    selected_wall: Option<usize>,
     report_dialog: Option<report::OptionsDialog>,
 }
 
@@ -133,6 +144,10 @@ impl Default for FloorTab {
             back: false,
             view: Settings::default(),
             pdf_picker: None,
+            wall_material: Material::Concrete,
+            wall_height: Material::Concrete.default_height_m(),
+            wall_start: None,
+            selected_wall: None,
             report_dialog: None,
         }
     }
@@ -231,7 +246,7 @@ impl FloorTab {
             Ok(d) => d,
             Err(e) => return self.status = format!("Not a usable image: {e}"),
         };
-        let floor = Floor { name, image: bytes, width_px: w, height_px: h, metres_per_px: None, points: Vec::new() };
+        let floor = Floor { name, image: bytes, width_px: w, height_px: h, metres_per_px: None, points: Vec::new(), walls: Vec::new(), ceiling_m: wifispanner_core::walls::DEFAULT_CEILING_M };
         let name = floor.name.clone();
         self.set_project(ctx, Project::new(floor), None);
         self.status = format!("Floor plan loaded.{note} Set the scale first: click two points a known distance apart.");
@@ -429,6 +444,10 @@ impl FloorTab {
                     self.tool = Tool::Scale;
                     self.scale_clicks.clear();
                 }
+                if theme::chip(ui, self.tool == Tool::Walls, Some(ICON_ARCHITECTURE), "Walls").clicked() {
+                    self.tool = Tool::Walls;
+                    self.wall_start = None;
+                }
             });
             if let Some(f) = self.project.as_ref().map(|p| &p.floor) {
                 ui.separator();
@@ -482,6 +501,156 @@ impl FloorTab {
                 self.heat_dirty = true;
             }
         });
+        if self.tool == Tool::Walls {
+            self.wall_palette(ui);
+        }
+    }
+
+    /// Material, height and undo controls shown while the wall tool is active.
+    fn wall_palette(&mut self, ui: &mut egui::Ui) {
+        let mut edited = false;
+        ui.horizontal_wrapped(|ui| {
+            for m in Material::ALL {
+                if theme::chip(ui, self.wall_material == m, None, m.name()).clicked() {
+                    self.wall_material = m;
+                    self.wall_height = m.default_height_m();
+                    if let (Some(i), Some(p)) = (self.selected_wall, self.project.as_mut())
+                        && let Some(w) = p.floor.walls.get_mut(i)
+                    {
+                        w.material = m;
+                        w.height_m = m.default_height_m();
+                        edited = true;
+                    }
+                }
+            }
+        });
+        let Some(ceiling) = self.project.as_ref().map(|p| p.floor.ceiling_m) else { return };
+        ui.horizontal_wrapped(|ui| {
+            // The height applies to the next wall, or to the selected wall.
+            let selected = self.selected_wall.and_then(|i| self.project.as_ref().and_then(|p| p.floor.walls.get(i)).map(|w| w.height_m));
+            let mut height = selected.unwrap_or(self.wall_height);
+            let mut full = height.is_none();
+            let which = if selected.is_some() { "Selected wall" } else { "Next wall" };
+            ui.label(which);
+            let full_changed = theme::switch_row(ui, &mut full, "Full height").changed();
+            let mut metres = height.unwrap_or(ceiling);
+            let metres_changed = ui
+                .add_enabled(!full, egui::DragValue::new(&mut metres).range(0.1..=ceiling.max(0.2)).speed(0.05).suffix(" m").fixed_decimals(2))
+                .changed();
+            if full_changed || metres_changed {
+                height = if full { None } else { Some(metres.min(ceiling)) };
+                match (self.selected_wall, self.project.as_mut()) {
+                    (Some(i), Some(p)) if i < p.floor.walls.len() => {
+                        p.floor.walls[i].height_m = height;
+                        edited = true;
+                    }
+                    _ => self.wall_height = height,
+                }
+            }
+            ui.separator();
+            ui.label("Ceiling");
+            let mut c = ceiling;
+            if ui.add(egui::DragValue::new(&mut c).range(1.0..=30.0).speed(0.05).suffix(" m").fixed_decimals(2)).changed()
+                && let Some(p) = self.project.as_mut()
+            {
+                p.floor.ceiling_m = c;
+                for w in &mut p.floor.walls {
+                    if let Some(h) = &mut w.height_m {
+                        *h = h.min(c);
+                    }
+                }
+                edited = true;
+            }
+            ui.separator();
+            let any = self.project.as_ref().is_some_and(|p| !p.floor.walls.is_empty());
+            if ui.add_enabled_ui(any, |ui| theme::button(ui, ButtonKind::Text, Some(ICON_UNDO), "Undo wall")).inner.clicked() {
+                self.undo_wall();
+                edited = true;
+            }
+        });
+        if edited {
+            self.autosave();
+        }
+    }
+
+    fn delete_selected_wall(&mut self) {
+        if let (Some(i), Some(p)) = (self.selected_wall, self.project.as_mut())
+            && i < p.floor.walls.len()
+        {
+            p.floor.walls.remove(i);
+            self.selected_wall = None;
+            self.autosave();
+        }
+    }
+
+    fn undo_wall(&mut self) {
+        if let Some(p) = self.project.as_mut() {
+            p.floor.walls.pop();
+            self.selected_wall = None;
+            self.wall_start = None;
+        }
+    }
+
+    /// The list of walls and the selected one's details, in place of the survey points.
+    fn walls_panel(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Walls");
+        let Some(floor) = self.project.as_mut().map(|p| &mut p.floor) else { return };
+        ui.label("Click to start a wall, click again for each corner. Right-click, double-click or Esc finishes. Ends snap to other walls and to straight angles.");
+        ui.separator();
+        let mut delete = None;
+        egui::ScrollArea::vertical().id_salt("walls").show(ui, |ui| {
+            for (i, w) in floor.walls.iter().enumerate() {
+                let len = match floor.metres_per_px {
+                    Some(m) => format!("{:.1} m", w.length_px() * m),
+                    None => format!("{:.0} px", w.length_px()),
+                };
+                let height = w.height_m.map_or("full height".to_string(), |h| format!("{h:.2} m high"));
+                let text = format!("{}.  {}  {}  {}", i + 1, w.material.name(), len, height);
+                if ui.selectable_label(self.selected_wall == Some(i), text).clicked() {
+                    self.selected_wall = Some(i);
+                    self.wall_start = None;
+                }
+            }
+            if floor.walls.is_empty() {
+                ui.label("No walls yet.");
+            }
+        });
+        if let Some(i) = self.selected_wall.filter(|&i| i < floor.walls.len()) {
+            ui.separator();
+            if theme::button(ui, ButtonKind::Outlined, Some(ICON_DELETE), &format!("Delete wall {}", i + 1)).clicked() {
+                delete = Some(i);
+            }
+        }
+        if let Some(i) = delete {
+            floor.walls.remove(i);
+            self.selected_wall = None;
+            self.autosave();
+        }
+    }
+
+    /// Where a wall point at `plan` lands once snapped.
+    fn snapped(&self, plan: Pos2, zoom: f32) -> Pos2 {
+        let walls = self.project.as_ref().map_or(&[][..], |p| &p.floor.walls[..]);
+        let s = walls::snap([plan.x, plan.y], self.wall_start.map(|p| [p.x, p.y]), walls, WALL_SNAP_PX / zoom);
+        Pos2::new(s[0], s[1])
+    }
+
+    fn wall_click(&mut self, plan: Pos2, zoom: f32) {
+        let at = self.snapped(plan, zoom);
+        match self.wall_start {
+            None => self.wall_start = Some(at),
+            Some(start) if start.distance(at) < 1.0 => {}
+            Some(start) => {
+                let mut wall = Wall::new([start.x, start.y], [at.x, at.y], self.wall_material);
+                wall.height_m = self.wall_height;
+                if let Some(p) = self.project.as_mut() {
+                    p.floor.walls.push(wall);
+                    self.selected_wall = Some(p.floor.walls.len() - 1);
+                }
+                self.wall_start = Some(at);
+                self.autosave();
+            }
+        }
     }
 
     /// Save the project, then open the dialog that chooses what the report contains.
@@ -543,6 +712,9 @@ impl FloorTab {
     }
 
     fn side_panel(&mut self, ui: &mut egui::Ui) {
+        if self.tool == Tool::Walls {
+            return self.walls_panel(ui);
+        }
         ui.heading("Survey points");
         let Some(floor) = self.project.as_mut().map(|p| &mut p.floor) else {
             ui.label("No floor plan loaded.");
@@ -634,7 +806,23 @@ impl FloorTab {
         let to_screen = |p: Pos2| rect.min + offset + p.to_vec2() * zoom;
         let to_plan = |s: Pos2| ((s - rect.min - offset) / zoom).to_pos2();
 
-        if resp.clicked()
+        if self.tool == Tool::Walls {
+            let plan = resp.interact_pointer_pos().map(to_plan);
+            if resp.double_clicked() || resp.secondary_clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.wall_start = None;
+            } else if resp.clicked()
+                && let Some(plan) = plan.filter(|p| p.x >= 0.0 && p.y >= 0.0 && p.x <= img_w && p.y <= img_h)
+            {
+                self.wall_click(plan, zoom);
+            }
+            if ui.input(|i| i.key_pressed(egui::Key::Delete)) {
+                self.delete_selected_wall();
+            }
+            if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Z)) {
+                self.undo_wall();
+                self.autosave();
+            }
+        } else if resp.clicked()
             && let Some(click) = resp.interact_pointer_pos()
         {
             self.handle_click(click, to_plan(click), &to_screen, env);
@@ -660,6 +848,37 @@ impl FloorTab {
         }
 
         let floor = &self.project.as_ref().expect("checked above").floor;
+        let ceiling = floor.ceiling_m;
+        for (i, w) in floor.walls.iter().enumerate() {
+            let ([r, g, b], width) = w.material.style();
+            let (a, c) = (to_screen(Pos2::new(w.a[0], w.a[1])), to_screen(Pos2::new(w.b[0], w.b[1])));
+            if self.tool == Tool::Walls && self.selected_wall == Some(i) {
+                painter.line_segment([a, c], Stroke::new(width + 6.0, Color32::from_rgba_unmultiplied(255, 220, 0, 140)));
+            }
+            // Partial-height walls are dashed so that they read as "low".
+            let colour = Color32::from_rgb(r, g, b);
+            if w.effective_height_m(ceiling) < ceiling - 0.01 {
+                painter.extend(egui::Shape::dashed_line(&[a, c], Stroke::new(width, colour), 9.0, 5.0));
+            } else {
+                painter.line_segment([a, c], Stroke::new(width, colour));
+            }
+        }
+        if self.tool == Tool::Walls
+            && let (Some(start), Some(hover)) = (self.wall_start, ui.input(|i| i.pointer.hover_pos()).filter(|p| rect.contains(*p)))
+        {
+            let end = self.snapped(to_plan(hover), zoom);
+            let ([r, g, b], width) = self.wall_material.style();
+            let (a, c) = (to_screen(start), to_screen(end));
+            painter.line_segment([a, c], Stroke::new(width, Color32::from_rgb(r, g, b).gamma_multiply(0.7)));
+            painter.circle_stroke(c, 6.0, Stroke::new(2.0, Color32::from_rgb(240, 140, 50)));
+            let len_px = start.distance(end);
+            let label = match floor.metres_per_px {
+                Some(m) => format!("{:.2} m", len_px * m),
+                None => format!("{len_px:.0} px"),
+            };
+            painter.text((a + c.to_vec2()) / 2.0 + Vec2::new(8.0, -8.0), egui::Align2::LEFT_BOTTOM, label, egui::FontId::proportional(14.0), Color32::from_rgb(240, 140, 50));
+            ui.ctx().request_repaint();
+        }
         if self.view.show_path {
             let path: Vec<Pos2> = floor.points.iter().map(|p| to_screen(Pos2::new(p.x, p.y))).collect();
             painter.add(egui::Shape::line(path, Stroke::new(2.0, Color32::from_rgb(30, 90, 200).gamma_multiply(0.7))));
@@ -703,6 +922,7 @@ impl FloorTab {
             return;
         }
         match self.tool {
+            Tool::Walls => {}
             Tool::Scale => {
                 if self.scale_clicks.len() >= 2 {
                     self.scale_clicks.clear();

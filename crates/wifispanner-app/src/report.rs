@@ -465,7 +465,28 @@ fn legend_of(v: &View, style: &ReportStyle) -> String {
 /// Opens a figure: the plan, and room for what is drawn over it.
 fn figure_open(id: &str, title: &str, floor: &Floor) -> String {
     let (w, h) = (floor.width_px, floor.height_px);
-    format!("<section class=\"fig\" id=\"{id}\"><h3>{}</h3><svg viewBox=\"0 0 {w} {h}\"><use href=\"#plan\"/>", esc(title))
+    format!("<section class=\"fig\" id=\"{id}\"><h3>{}</h3><svg viewBox=\"0 0 {w} {h}\"><use href=\"#plan\"/>{}", esc(title), walls_svg(floor))
+}
+
+/// The drawn walls over the plan: coloured by material, dashed when lower than the ceiling.
+fn walls_svg(floor: &Floor) -> String {
+    let unit = floor.width_px.max(floor.height_px) as f32 / 900.0;
+    let mut o = String::new();
+    for w in &floor.walls {
+        let ([r, g, b], width) = w.material.style();
+        let low = w.effective_height_m(floor.ceiling_m) < floor.ceiling_m - 0.01;
+        let _ = write!(
+            o,
+            "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"rgb({r},{g},{b})\" stroke-width=\"{}\" stroke-linecap=\"round\"{}/>",
+            w.a[0],
+            w.a[1],
+            w.b[0],
+            w.b[1],
+            width * unit,
+            if low { format!(" stroke-dasharray=\"{} {}\"", 8.0 * unit, 5.0 * unit) } else { String::new() }
+        );
+    }
+    o
 }
 
 fn heat_layer(floor: &Floor, png: &[u8]) -> String {
@@ -789,7 +810,7 @@ mod tests {
     fn project(points: Vec<SurveyPoint>) -> Project {
         let mut png = Vec::new();
         image::RgbaImage::new(40, 20).write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
-        Project::new(Floor { name: "Test <plan>".into(), image: png, width_px: 40, height_px: 20, metres_per_px: Some(0.5), points })
+        Project::new(Floor { name: "Test <plan>".into(), image: png, width_px: 40, height_px: 20, metres_per_px: Some(0.5), points, walls: Vec::new(), ceiling_m: 3.0 })
     }
 
     fn html(p: &Project) -> String {
@@ -894,6 +915,17 @@ mod tests {
         assert!(aps[0].x < 10.0, "pulled towards the loud point, got {}", aps[0].x);
         let faint = project(vec![at(5.0, vec![obs("aa:00:00:00:00:01", "A", 5180, -85.0)])]);
         assert!(place_aps(&faint.floor, Band::Ghz5).is_empty(), "a distant neighbour is not placed");
+    }
+
+    #[test]
+    fn drawn_walls_appear_on_every_map_and_low_ones_are_dashed() {
+        let mut p = project(vec![point(5.0, "Mine", -50.0)]);
+        p.floor.walls.push(wifispanner_core::walls::Wall::new([1.0, 1.0], [30.0, 1.0], wifispanner_core::Material::Concrete));
+        p.floor.walls.push(wifispanner_core::walls::Wall::new([1.0, 5.0], [30.0, 5.0], wifispanner_core::Material::Metal));
+        let out = html(&p);
+        let figures = out.matches("<section class=\"fig\"").count();
+        assert_eq!(out.matches("<line ").count(), 2 * figures);
+        assert_eq!(out.matches("stroke-linecap=\"round\" stroke-dasharray").count(), figures, "only the shelf is lower than the ceiling");
     }
 
     #[test]
