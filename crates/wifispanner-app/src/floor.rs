@@ -1521,14 +1521,15 @@ impl FloorTab {
     fn wall_height_controls(&self, ui: &mut egui::Ui, floor: &Floor, shown: Option<Option<f32>>, selecting: bool, edits: &mut Vec<WallEdit>) {
         let r = theme::roles(ui.ctx());
         let ceiling = floor.ceiling_m;
-        ui.add_space(6.0);
+        ui.add_space(4.0);
         let mut full = shown.is_none_or(|h| h.is_none());
         let mixed = shown.is_none();
-        if theme::switch_row(ui, &mut full, "Full height").changed() {
-            edits.push(WallEdit::Height(if full { None } else { Some(ceiling) }));
-        }
         let mut metres = shown.flatten().unwrap_or(ceiling);
-        ui.horizontal(|ui| {
+        // Full height, the height and the ceiling share one row.
+        ui.horizontal_wrapped(|ui| {
+            if theme::switch_row(ui, &mut full, "Full height").changed() {
+                edits.push(WallEdit::Height(if full { None } else { Some(ceiling) }));
+            }
             ui.label("Height");
             if ui.add_enabled(!full, egui::DragValue::new(&mut metres).range(0.1..=ceiling.max(0.2)).speed(0.05).suffix(" m").fixed_decimals(2)).changed() {
                 edits.push(WallEdit::Height(Some(metres.min(ceiling))));
@@ -1536,8 +1537,6 @@ impl FloorTab {
             if mixed && selecting {
                 ui.label(egui::RichText::new("(mixed)").text_style(egui::TextStyle::Body).color(r.on_surface_variant));
             }
-        });
-        ui.horizontal(|ui| {
             ui.label("Ceiling");
             let mut c = ceiling;
             if ui.add(egui::DragValue::new(&mut c).range(1.0..=30.0).speed(0.05).suffix(" m").fixed_decimals(2)).changed() {
@@ -1557,10 +1556,18 @@ impl FloorTab {
             return (walls_out, aps_out);
         }
         let Some(floor) = self.project.as_ref().map(|p| p.floor()) else { return (walls_out, aps_out) };
-        egui::Area::new(egui::Id::unique("right_panel"))
+        // The menu is as tall as its content. Where the window is too short to show it below
+        // the round buttons it moves up, as far as the top of the plan, to fit. Its height
+        // from the last frame decides, as it is only known once it has been drawn.
+        let height_id = egui::Id::unique("right_panel_height");
+        let last_height = ctx.data(|d| d.get_temp::<f32>(height_id)).unwrap_or(0.0);
+        let default_top = canvas.top() + right_top(ctx);
+        let top = if last_height > 0.0 { default_top.min(ctx.content_rect().bottom() - 24.0 - last_height).max(canvas.top() + 8.0) } else { default_top };
+        let x = canvas.right() - 12.0 - if self.floors_open { 250.0 } else { 0.0 };
+        let shown = egui::Area::new(egui::Id::unique("right_panel"))
             .order(egui::Order::Foreground)
             .pivot(egui::Align2::RIGHT_TOP)
-            .fixed_pos(canvas.right_top() + Vec2::new(-12.0 - if self.floors_open { 250.0 } else { 0.0 }, right_top(ctx)))
+            .fixed_pos(egui::pos2(x, top))
             .show(ctx, |ui| {
                 egui::Frame::new()
                     .fill(r.surface_container_high)
@@ -1568,36 +1575,42 @@ impl FloorTab {
                     .corner_radius(20)
                     .inner_margin(10)
                     .shadow(theme::shadow(r.shadow, 16, 0.18))
-                    .show(ui, |ui| {
-                        // The most height there is, from the top of this menu to the bottom of the window.
-                        let top = canvas.top() + right_top(ctx);
-                        let room = (ctx.content_rect().bottom() - top - 28.0).max(160.0);
-                        if self.tool == Tool::Aps {
+                    .show(ui, |ui| match self.tool {
+                        Tool::Aps => {
+                            // Only the list of models scrolls: seven rows, as far as the window allows.
                             ui.set_width(300.0);
+                            let room = (ctx.content_rect().bottom() - canvas.top() - 28.0).max(160.0);
                             self.devices_content(ui, floor, room, &mut aps_out);
-                            return;
                         }
-                        // The lists of materials and kinds are in two columns, so those menus are wider.
-                        ui.set_width(if self.tool == Tool::Client { 250.0 } else { 400.0 });
-                        // A menu always shows whole; it only scrolls if the window is too short for it.
-                        egui::ScrollArea::vertical().id_salt(("right_panel", self.tool as u8)).max_height(room).auto_shrink([false, true]).show(ui, |ui| match self.tool {
-                            Tool::Walls => self.walls_content(ui, floor, &mut walls_out),
-                            Tool::Select => self.select_content(ui, floor, &mut walls_out, &mut aps_out),
-                            Tool::Obstacles => self.obstacles_content(ui, floor, &mut walls_out),
-                            Tool::Client => self.client_content(ui, floor, &mut walls_out),
-                            _ => {}
-                        });
+                        tool => {
+                            // The lists of materials and kinds are in two columns, so those menus are wider.
+                            ui.set_width(if tool == Tool::Client { 250.0 } else { 400.0 });
+                            match tool {
+                                Tool::Walls => self.walls_content(ui, floor, &mut walls_out),
+                                Tool::Select => self.select_content(ui, floor, &mut walls_out, &mut aps_out),
+                                Tool::Obstacles => self.obstacles_content(ui, floor, &mut walls_out),
+                                Tool::Client => self.client_content(ui, floor, &mut walls_out),
+                                _ => {}
+                            }
+                        }
                     });
             });
+        let height = shown.response.rect.height();
+        if (height - last_height).abs() > 0.5 {
+            ctx.data_mut(|d| d.insert_temp(height_id, height));
+            ctx.request_repaint();
+        }
         (walls_out, aps_out)
     }
 
     /// The wall menu: wall or room, material list, heights.
     fn walls_content(&self, ui: &mut egui::Ui, floor: &Floor, edits: &mut Vec<WallEdit>) {
-        let r = theme::roles(ui.ctx());
-        ui.label(theme::heading(ui, "Auto-draw Walls"));
-        ui.add_space(4.0);
+        let how = match self.wall_mode {
+            WallMode::Wall => "Click the start, then the end of a wall.",
+            WallMode::Room => "Click two opposite corners of a room.",
+        };
         ui.horizontal(|ui| {
+            ui.label(theme::heading(ui, "Auto-draw Walls")).on_hover_text(format!("{how} Esc or right-click cancels. Hold Shift to turn snapping off."));
             if theme::chip(ui, self.wall_mode == WallMode::Wall, Some(ICON_EDIT), "Wall").clicked() {
                 edits.push(WallEdit::Mode(WallMode::Wall));
             }
@@ -1605,14 +1618,8 @@ impl FloorTab {
                 edits.push(WallEdit::Mode(WallMode::Room));
             }
         });
-        let how = match self.wall_mode {
-            WallMode::Wall => "Click the start, then the end.",
-            WallMode::Room => "Click two opposite corners.",
-        };
-        ui.label(egui::RichText::new(format!("{how} Esc cancels.")).text_style(egui::TextStyle::Body).color(r.on_surface_variant)).on_hover_text("Right-click also cancels. Hold Shift to turn snapping off.");
         self.material_rows(ui, Some(self.wall_material), edits);
         self.wall_height_controls(ui, floor, Some(self.wall_height), false, edits);
-        ui.add_space(6.0);
         if ui.add_enabled_ui(!self.wall_history.is_empty(), |ui| theme::button(ui, ButtonKind::Text, Some(ICON_UNDO), "Undo")).inner.clicked() {
             edits.push(WallEdit::Undo);
         }
@@ -1685,14 +1692,14 @@ impl FloorTab {
     fn area_height_controls(&self, ui: &mut egui::Ui, floor: &Floor, shown: Option<Option<f32>>, selecting: bool, edits: &mut Vec<WallEdit>) {
         let r = theme::roles(ui.ctx());
         let ceiling = floor.ceiling_m;
-        ui.add_space(6.0);
+        ui.add_space(4.0);
         let mut full = shown.is_none_or(|h| h.is_none());
         let mixed = shown.is_none();
-        if theme::switch_row(ui, &mut full, "Full height").changed() {
-            edits.push(WallEdit::AreaHeight(if full { None } else { Some(ceiling) }));
-        }
         let mut metres = shown.flatten().unwrap_or(ceiling);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
+            if theme::switch_row(ui, &mut full, "Full height").changed() {
+                edits.push(WallEdit::AreaHeight(if full { None } else { Some(ceiling) }));
+            }
             ui.label("Height");
             if ui.add_enabled(!full, egui::DragValue::new(&mut metres).range(0.1..=ceiling.max(0.2)).speed(0.05).suffix(" m").fixed_decimals(2)).changed() {
                 edits.push(WallEdit::AreaHeight(Some(metres.min(ceiling))));
@@ -1705,9 +1712,12 @@ impl FloorTab {
 
     /// The obstacle menu: rectangle or polygon, kind, height.
     fn obstacles_content(&self, ui: &mut egui::Ui, floor: &Floor, edits: &mut Vec<WallEdit>) {
-        let r = theme::roles(ui.ctx());
-        ui.label(theme::heading(ui, "Obstacle Areas"));
+        let how = match self.area_mode {
+            AreaMode::Rectangle => "Click two opposite corners.",
+            AreaMode::Polygon => "Click each corner; double-click or Enter closes it.",
+        };
         ui.horizontal(|ui| {
+            ui.label(theme::heading(ui, "Obstacle Areas")).on_hover_text(format!("{how} Esc or right-click cancels. Signal loses the dB per metre listed for the stretch it passes through, below the area's height."));
             if theme::chip(ui, self.area_mode == AreaMode::Rectangle, Some(ICON_CROP_FREE), "Rectangle").clicked() {
                 edits.push(WallEdit::AreaMode(AreaMode::Rectangle));
             }
@@ -1715,14 +1725,8 @@ impl FloorTab {
                 edits.push(WallEdit::AreaMode(AreaMode::Polygon));
             }
         });
-        let how = match self.area_mode {
-            AreaMode::Rectangle => "Click two opposite corners.",
-            AreaMode::Polygon => "Click each corner; double-click closes.",
-        };
-        ui.label(egui::RichText::new(how).text_style(egui::TextStyle::Body).color(r.on_surface_variant)).on_hover_text("Signal loses the dB per metre listed for the stretch it passes through, below the area's height. Enter also closes a polygon; Esc or right-click cancels.");
         self.kind_rows(ui, Some(self.obstacle_kind), edits);
         self.area_height_controls(ui, floor, Some(self.obstacle_height), false, edits);
-        ui.add_space(6.0);
         if ui.add_enabled_ui(!self.wall_history.is_empty(), |ui| theme::button(ui, ButtonKind::Text, Some(ICON_UNDO), "Undo")).inner.clicked() {
             edits.push(WallEdit::Undo);
         }
