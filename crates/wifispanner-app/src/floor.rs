@@ -86,9 +86,16 @@ const WALL_HISTORY: usize = 100;
 const AP_PICK_PX: f32 = 16.0;
 /// The stacked-layers picture for the floors button (white on transparent, tinted when drawn).
 const LAYERS_ICON: &[u8] = include_bytes!("../assets/layers.png");
-const LAYERS_BUTTON: f32 = 44.0;
 /// How far down the right edge the bubbles start, below the floors button.
-const RIGHT_BUBBLES_TOP: f32 = 12.0 + 2.0 * LAYERS_BUTTON + 16.0;
+/// Size of the round buttons over the plan, with the density.
+fn round_size(ctx: &egui::Context) -> f32 {
+    theme::density(ctx).button_height() + 4.0
+}
+
+/// How far down the right edge the menus start, below the two round buttons.
+fn right_top(ctx: &egui::Context) -> f32 {
+    12.0 + 2.0 * round_size(ctx) + 16.0
+}
 
 /// The scale (metres per plan pixel) implied by `metres` between two points
 /// `px_apart` pixels apart on a plan of `w` x `h` pixels, or why it is not
@@ -701,7 +708,7 @@ impl FloorTab {
         egui::Area::new(egui::Id::unique("floors_bubble"))
             .order(egui::Order::Foreground)
             .pivot(egui::Align2::RIGHT_TOP)
-            .fixed_pos(canvas.right_top() + Vec2::new(-12.0, RIGHT_BUBBLES_TOP))
+            .fixed_pos(canvas.right_top() + Vec2::new(-12.0, right_top(ctx)))
             .show(ctx, |ui| {
                 egui::Frame::new()
                     .fill(r.surface_container_high)
@@ -711,7 +718,7 @@ impl FloorTab {
                     .shadow(theme::shadow(r.shadow, 16, 0.18))
                     .show(ui, |ui| {
                         ui.set_width(210.0);
-                        ui.label(egui::RichText::new("Floors").size(15.0).color(r.on_surface_variant));
+                        ui.label(theme::heading(ui, "Floors"));
                         ui.add_space(4.0);
                         // Highest floor first, like the building.
                         for (i, fl) in p.floors.iter().enumerate().rev() {
@@ -747,7 +754,7 @@ impl FloorTab {
                         });
                         if let Some(o) = self.overlay.filter(|&o| o != p.active && o < p.floors.len()) {
                             ui.separator();
-                            ui.label(egui::RichText::new(format!("Overlay: {}", p.floors[o].name)).size(13.0));
+                            ui.label(egui::RichText::new(format!("Overlay: {}", p.floors[o].name)).text_style(egui::TextStyle::Body));
                             let mut a = self.overlay_opacity;
                             ui.spacing_mut().slider_width = 130.0;
                             if ui.add(egui::Slider::new(&mut a, 0.1..=1.0).text("Opacity")).changed() {
@@ -757,7 +764,7 @@ impl FloorTab {
                                 edits.push(FloorEdit::Align);
                             }
                             if self.tool == Tool::Align {
-                                ui.label(egui::RichText::new("Drag the ghost floor to line it up with this one. Pan with the right mouse button.").size(12.5).color(r.on_surface_variant));
+                                ui.label(egui::RichText::new("Drag the ghost floor to line it up with this one. Pan with the right mouse button.").text_style(egui::TextStyle::Body).color(r.on_surface_variant));
                                 let mut deg = p.floors[o].placement.rotation_deg;
                                 ui.horizontal(|ui| {
                                     ui.label("Rotate");
@@ -940,7 +947,7 @@ impl FloorTab {
     fn settings_menu(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let r = theme::roles(ui.ctx());
         ui.set_min_width(300.0);
-        ui.label(egui::RichText::new("Project").size(13.0).color(r.on_surface_variant));
+        ui.label(theme::heading(ui, "Project"));
         if theme::button(ui, ButtonKind::Tonal, Some(ICON_IMAGE), "Open floor plan").clicked() {
             self.pick_plan(ctx);
             ui.close();
@@ -973,7 +980,7 @@ impl FloorTab {
             return;
         }
         ui.separator();
-        ui.label(egui::RichText::new(if self.mode == WorkMode::Survey { "Heatmap" } else { "Predicted coverage" }).size(13.0).color(r.on_surface_variant));
+        ui.label(theme::heading(ui, "View"));
         // Fields that can be edited get an outline, so they read as fields and not as labels.
         ui.scope(|ui| {
             let w = &mut ui.visuals_mut().widgets;
@@ -1469,13 +1476,13 @@ impl FloorTab {
                 Band::Ghz6 => a.ghz6,
             };
             let ([cr, cg, cb], _) = m.style();
-            let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0), Sense::click());
+            let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0 * theme::density(ui.ctx()).font_scale()), Sense::click());
             if current == Some(m) {
                 ui.painter().rect_filled(rect, 8.0, r.secondary_container);
             } else if resp.hovered() {
                 ui.painter().rect_filled(rect, 8.0, theme::state_layer(Color32::TRANSPARENT, r.on_surface, 0.08));
             }
-            let font = egui::FontId::proportional(14.0);
+            let font = egui::TextStyle::Body.resolve(ui.style());
             ui.painter().text(rect.left_center() + Vec2::new(10.0, 0.0), egui::Align2::LEFT_CENTER, m.name(), font.clone(), r.on_surface);
             ui.painter().circle_filled(rect.right_center() - Vec2::new(12.0, 0.0), 5.0, Color32::from_rgb(cr, cg, cb));
             ui.painter().text(rect.right_center() - Vec2::new(26.0, 0.0), egui::Align2::RIGHT_CENTER, format!("{db:.0} dB"), font, r.on_surface_variant);
@@ -1503,7 +1510,7 @@ impl FloorTab {
                 edits.push(WallEdit::Height(Some(metres.min(ceiling))));
             }
             if mixed && selecting {
-                ui.label(egui::RichText::new("(mixed)").size(12.0).color(r.on_surface_variant));
+                ui.label(egui::RichText::new("(mixed)").text_style(egui::TextStyle::Body).color(r.on_surface_variant));
             }
         });
         ui.horizontal(|ui| {
@@ -1529,7 +1536,7 @@ impl FloorTab {
         egui::Area::new(egui::Id::unique("right_panel"))
             .order(egui::Order::Foreground)
             .pivot(egui::Align2::RIGHT_TOP)
-            .fixed_pos(canvas.right_top() + Vec2::new(-12.0 - if self.floors_open { 250.0 } else { 0.0 }, RIGHT_BUBBLES_TOP))
+            .fixed_pos(canvas.right_top() + Vec2::new(-12.0 - if self.floors_open { 250.0 } else { 0.0 }, right_top(ctx)))
             .show(ctx, |ui| {
                 egui::Frame::new()
                     .fill(r.surface_container_high)
@@ -1538,7 +1545,7 @@ impl FloorTab {
                     .inner_margin(14)
                     .shadow(theme::shadow(r.shadow, 16, 0.18))
                     .show(ui, |ui| {
-                        let room = (canvas.height() - RIGHT_BUBBLES_TOP - 28.0).max(160.0);
+                        let room = (canvas.height() - right_top(ctx) - 28.0).max(160.0);
                         if self.tool == Tool::Aps {
                             // The device list takes all the height there is.
                             ui.set_width(300.0);
@@ -1563,7 +1570,7 @@ impl FloorTab {
     /// The wall menu: wall or room, material list, heights.
     fn walls_content(&self, ui: &mut egui::Ui, floor: &Floor, edits: &mut Vec<WallEdit>) {
         let r = theme::roles(ui.ctx());
-        ui.label(egui::RichText::new("Auto-draw Walls").size(15.0).color(r.primary));
+        ui.label(theme::heading(ui, "Auto-draw Walls"));
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             if theme::chip(ui, self.wall_mode == WallMode::Wall, Some(ICON_EDIT), "Wall").clicked() {
@@ -1577,7 +1584,7 @@ impl FloorTab {
             WallMode::Wall => "Click to place the start of a wall, then its end.",
             WallMode::Room => "Click one corner of the room, then the opposite corner.",
         };
-        ui.label(egui::RichText::new(format!("{how} Esc or right-click cancels, hold Shift to disable snapping.")).size(12.5).color(r.on_surface_variant));
+        ui.label(egui::RichText::new(format!("{how} Esc or right-click cancels, hold Shift to disable snapping.")).text_style(egui::TextStyle::Body).color(r.on_surface_variant));
         ui.add_space(4.0);
         self.material_rows(ui, Some(self.wall_material), edits);
         self.wall_height_controls(ui, floor, Some(self.wall_height), false, edits);
@@ -1593,14 +1600,14 @@ impl FloorTab {
         let walls: Vec<&Wall> = self.selected_walls.iter().filter_map(|&i| floor.walls.get(i)).collect();
         let aps: Vec<&PlannedAp> = self.aps_selected.iter().filter_map(|&i| floor.layer(self.mode == WorkMode::Plan).get(i)).collect();
         let areas: Vec<&Area> = self.selected_areas.iter().filter_map(|&i| floor.areas.get(i)).collect();
-        ui.label(egui::RichText::new("Select").size(15.0).color(r.primary));
+        ui.label(theme::heading(ui, "Select"));
         if walls.is_empty() && aps.is_empty() && areas.is_empty() {
-            ui.label(egui::RichText::new("Click a wall, an area or a device, or drag a box over several. Ctrl or Shift adds to the selection, Ctrl+A selects everything.").size(12.5).color(r.on_surface_variant));
+            ui.label(egui::RichText::new("Click a wall, an area or a device, or drag a box over several. Ctrl or Shift adds to the selection, Ctrl+A selects everything.").text_style(egui::TextStyle::Body).color(r.on_surface_variant));
             return;
         }
         if !walls.is_empty() {
             ui.add_space(4.0);
-            ui.label(egui::RichText::new(format!("{} wall{}", walls.len(), if walls.len() == 1 { "" } else { "s" })).size(13.0).color(r.on_surface_variant));
+            ui.label(egui::RichText::new(format!("{} wall{}", walls.len(), if walls.len() == 1 { "" } else { "s" })).text_style(egui::TextStyle::Body).color(r.on_surface_variant));
             let first = walls[0];
             let material = walls.iter().all(|w| w.material == first.material).then_some(first.material);
             let height = walls.iter().all(|w| w.height_m == first.height_m).then_some(first.height_m);
@@ -1609,7 +1616,7 @@ impl FloorTab {
         }
         if !areas.is_empty() {
             ui.add_space(8.0);
-            ui.label(egui::RichText::new(format!("{} obstacle area{}", areas.len(), if areas.len() == 1 { "" } else { "s" })).size(13.0).color(r.on_surface_variant));
+            ui.label(egui::RichText::new(format!("{} obstacle area{}", areas.len(), if areas.len() == 1 { "" } else { "s" })).text_style(egui::TextStyle::Body).color(r.on_surface_variant));
             let first = areas[0];
             let kind = areas.iter().all(|a| a.kind == first.kind).then_some(first.kind);
             let height = areas.iter().all(|a| a.height_m == first.height_m).then_some(first.height_m);
@@ -1641,13 +1648,13 @@ impl FloorTab {
         let r = theme::roles(ui.ctx());
         for k in ObstacleKind::ALL {
             let [cr, cg, cb] = k.colour();
-            let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0), Sense::click());
+            let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0 * theme::density(ui.ctx()).font_scale()), Sense::click());
             if current == Some(k) {
                 ui.painter().rect_filled(rect, 8.0, r.secondary_container);
             } else if resp.hovered() {
                 ui.painter().rect_filled(rect, 8.0, theme::state_layer(Color32::TRANSPARENT, r.on_surface, 0.08));
             }
-            let font = egui::FontId::proportional(14.0);
+            let font = egui::TextStyle::Body.resolve(ui.style());
             ui.painter().text(rect.left_center() + Vec2::new(10.0, 0.0), egui::Align2::LEFT_CENTER, k.name(), font.clone(), r.on_surface);
             ui.painter().circle_filled(rect.right_center() - Vec2::new(12.0, 0.0), 5.0, Color32::from_rgb(cr, cg, cb));
             ui.painter().text(rect.right_center() - Vec2::new(26.0, 0.0), egui::Align2::RIGHT_CENTER, format!("{:.0} dB/m", k.db_per_m()), font, r.on_surface_variant);
@@ -1674,7 +1681,7 @@ impl FloorTab {
                 edits.push(WallEdit::AreaHeight(Some(metres.min(ceiling))));
             }
             if mixed && selecting {
-                ui.label(egui::RichText::new("(mixed)").size(12.0).color(r.on_surface_variant));
+                ui.label(egui::RichText::new("(mixed)").text_style(egui::TextStyle::Body).color(r.on_surface_variant));
             }
         });
     }
@@ -1682,8 +1689,8 @@ impl FloorTab {
     /// The obstacle menu: rectangle or polygon, kind, height.
     fn obstacles_content(&self, ui: &mut egui::Ui, floor: &Floor, edits: &mut Vec<WallEdit>) {
         let r = theme::roles(ui.ctx());
-        ui.label(egui::RichText::new("Obstacle Areas").size(15.0).color(r.primary));
-        ui.label(egui::RichText::new("Signal loses the dB per metre listed for the stretch it passes through, below the area's height.").size(12.5).color(r.on_surface_variant));
+        ui.label(theme::heading(ui, "Obstacle Areas"));
+        ui.label(egui::RichText::new("Signal loses the dB per metre listed for the stretch it passes through, below the area's height.").text_style(egui::TextStyle::Body).color(r.on_surface_variant));
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             if theme::chip(ui, self.area_mode == AreaMode::Rectangle, Some(ICON_CROP_FREE), "Rectangle").clicked() {
@@ -1697,7 +1704,7 @@ impl FloorTab {
             AreaMode::Rectangle => "Click one corner, then the opposite corner.",
             AreaMode::Polygon => "Click each corner. Double-click, Enter, or a click on the first corner closes it.",
         };
-        ui.label(egui::RichText::new(format!("{how} Esc or right-click cancels.")).size(12.5).color(r.on_surface_variant));
+        ui.label(egui::RichText::new(format!("{how} Esc or right-click cancels.")).text_style(egui::TextStyle::Body).color(r.on_surface_variant));
         ui.add_space(4.0);
         self.kind_rows(ui, Some(self.obstacle_kind), edits);
         self.area_height_controls(ui, floor, Some(self.obstacle_height), false, edits);
@@ -1721,8 +1728,8 @@ impl FloorTab {
     /// The client menu: device type, receiver height, and what it would get where it stands.
     fn client_content(&self, ui: &mut egui::Ui, floor: &Floor, edits: &mut Vec<WallEdit>) {
         let r = theme::roles(ui.ctx());
-        ui.label(egui::RichText::new("Client Experience").size(15.0).color(r.primary));
-        ui.label(egui::RichText::new("Click or drag on the plan to put a client down. Pan with the right mouse button.").size(12.5).color(r.on_surface_variant));
+        ui.label(theme::heading(ui, "Client Experience"));
+        ui.label(egui::RichText::new("Click or drag on the plan to put a client down. Pan with the right mouse button.").text_style(egui::TextStyle::Body).color(r.on_surface_variant));
         ui.add_space(4.0);
         egui::ComboBox::from_id_salt("client_kind").selected_text(CLIENTS[self.client_kind].0).width(220.0).show_ui(ui, |ui| {
             for (i, (name, _)) in CLIENTS.iter().enumerate() {
@@ -1761,7 +1768,7 @@ impl FloorTab {
             }
             _ => {
                 ui.label(egui::RichText::new("No WiFi coverage").strong().color(r.error));
-                ui.label(egui::RichText::new("Move the client closer to an access point with a radio on one of its bands.").size(12.5).color(r.on_surface_variant));
+                ui.label(egui::RichText::new("Move the client closer to an access point with a radio on one of its bands.").text_style(egui::TextStyle::Body).color(r.on_surface_variant));
             }
         }
         ui.add_space(6.0);
@@ -1769,10 +1776,10 @@ impl FloorTab {
             match hit {
                 Some((ap, dbm)) => {
                     let name = floor.layer(self.mode == WorkMode::Plan).get(ap).map_or("", |a| a.name.as_str());
-                    ui.label(egui::RichText::new(format!("{band}:  {dbm:.0} dBm  ({name})")).size(13.0).color(rating_colour(dbm)));
+                    ui.label(egui::RichText::new(format!("{band}:  {dbm:.0} dBm  ({name})")).text_style(egui::TextStyle::Body).color(rating_colour(dbm)));
                 }
                 None => {
-                    ui.label(egui::RichText::new(format!("{band}:  no access point on this band")).size(13.0).color(r.on_surface_variant));
+                    ui.label(egui::RichText::new(format!("{band}:  no access point on this band")).text_style(egui::TextStyle::Body).color(r.on_surface_variant));
                 }
             }
         }
@@ -1789,12 +1796,12 @@ impl FloorTab {
     /// The "Add Devices" menu: a searchable list of models to place.
     fn devices_content(&self, ui: &mut egui::Ui, floor: &Floor, room: f32, edits: &mut Vec<ApEdit>) {
         let r = theme::roles(ui.ctx());
-        ui.label(egui::RichText::new("Add Devices").size(15.0).color(r.primary));
+        ui.label(theme::heading(ui, "Add Devices"));
         let layer = floor.layer(self.mode == WorkMode::Plan);
         let (installed, planned) = (layer.iter().filter(|a| a.existing).count(), layer.iter().filter(|a| !a.existing).count());
         let counts = if self.mode == WorkMode::Plan { format!("{installed} from the survey, {planned} planned on this floor") } else { format!("{installed} installed access points plotted on this floor") };
-        ui.label(egui::RichText::new(counts).size(12.5).color(r.on_surface_variant));
-        ui.label(egui::RichText::new("Pick a model, then click the plan to place it. Drag a device to move it.").size(12.5).color(r.on_surface_variant));
+        ui.label(egui::RichText::new(counts).text_style(egui::TextStyle::Body).color(r.on_surface_variant));
+        ui.label(egui::RichText::new("Pick a model, then click the plan to place it. Drag a device to move it.").text_style(egui::TextStyle::Body).color(r.on_surface_variant));
         ui.add_space(4.0);
         let mut search = self.model_search.clone();
         if ui.add(egui::TextEdit::singleline(&mut search).hint_text("Search").desired_width(f32::INFINITY)).changed() {
@@ -1803,13 +1810,13 @@ impl FloorTab {
         ui.add_space(4.0);
         let current = self.ap_template.model.clone();
         let custom = current.is_none();
-        let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), Sense::click());
+        let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0 * theme::density(ui.ctx()).font_scale()), Sense::click());
         if custom {
             ui.painter().rect_filled(rect, 8.0, r.secondary_container);
         } else if resp.hovered() {
             ui.painter().rect_filled(rect, 8.0, theme::state_layer(Color32::TRANSPARENT, r.on_surface, 0.08));
         }
-        ui.painter().text(rect.left_center() + Vec2::new(10.0, 0.0), egui::Align2::LEFT_CENTER, "Custom (set power by hand)", egui::FontId::proportional(14.0), r.on_surface);
+        ui.painter().text(rect.left_center() + Vec2::new(10.0, 0.0), egui::Align2::LEFT_CENTER, "Custom (set power by hand)", egui::TextStyle::Body.resolve(ui.style()), r.on_surface);
         if resp.clicked() {
             edits.push(ApEdit::Template(None));
         }
@@ -1818,20 +1825,20 @@ impl FloorTab {
         egui::ScrollArea::vertical().max_height(list_height).auto_shrink([false, false]).show(ui, |ui| {
             for m in catalog::search(&self.models, &self.model_search) {
                 let on = current.as_deref() == Some(m.id().as_str());
-                let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 46.0), Sense::click());
+                let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 46.0 * theme::density(ui.ctx()).font_scale()), Sense::click());
                 if on {
                     ui.painter().rect_filled(rect, 8.0, r.secondary_container);
                 } else if resp.hovered() {
                     ui.painter().rect_filled(rect, 8.0, theme::state_layer(Color32::TRANSPARENT, r.on_surface, 0.08));
                 }
-                ui.painter().text(rect.left_top() + Vec2::new(10.0, 6.0), egui::Align2::LEFT_TOP, &m.name, egui::FontId::proportional(14.0), r.on_surface);
+                ui.painter().text(rect.left_top() + Vec2::new(10.0, 6.0), egui::Align2::LEFT_TOP, &m.name, egui::TextStyle::Body.resolve(ui.style()), r.on_surface);
                 let bands: Vec<&str> = m.radios.iter().map(|rd| match rd.band {
                     RadioBand::Ghz2_4 => "2.4",
                     RadioBand::Ghz5 => "5",
                     RadioBand::Ghz6 => "6",
                 }).collect();
                 let sub = format!("{} GHz  |  {}  |  {}", bands.join(" + "), m.vendor, if m.verified { "from maker's specs" } else { "typical" });
-                ui.painter().text(rect.left_top() + Vec2::new(10.0, 25.0), egui::Align2::LEFT_TOP, sub, egui::FontId::proportional(11.5), r.on_surface_variant);
+                ui.painter().text(rect.left_top() + Vec2::new(10.0, 25.0), egui::Align2::LEFT_TOP, sub, egui::TextStyle::Body.resolve(ui.style()), r.on_surface_variant);
                 if resp.clicked() {
                     edits.push(ApEdit::Template(Some(m.clone())));
                 }
@@ -1843,7 +1850,7 @@ impl FloorTab {
     fn device_controls(&self, ui: &mut egui::Ui, floor: &Floor, picked: &[&PlannedAp], edits: &mut Vec<ApEdit>) {
         let r = theme::roles(ui.ctx());
         let first = picked[0];
-        ui.label(egui::RichText::new(format!("{} device{}", picked.len(), if picked.len() == 1 { "" } else { "s" })).size(13.0).color(r.on_surface_variant));
+        ui.label(egui::RichText::new(format!("{} device{}", picked.len(), if picked.len() == 1 { "" } else { "s" })).text_style(egui::TextStyle::Body).color(r.on_surface_variant));
         if picked.len() == 1 {
             let mut name = first.name.clone();
             if ui.add(egui::TextEdit::singleline(&mut name).desired_width(f32::INFINITY)).changed() {
@@ -1859,7 +1866,7 @@ impl FloorTab {
             edits.push(ApEdit::Existing(inst));
         }
         ui.add_space(4.0);
-        ui.label(egui::RichText::new("Model").size(12.5).color(r.on_surface_variant));
+        ui.label(egui::RichText::new("Model").text_style(egui::TextStyle::Body).color(r.on_surface_variant));
         let label = first.model.clone().unwrap_or_else(|| "Custom (set power by hand)".into());
         if theme::button(ui, ButtonKind::Tonal, None, &label).clicked() {
             edits.push(ApEdit::PickModel);
@@ -1885,7 +1892,7 @@ impl FloorTab {
                     RadioBand::Ghz5 => "5 GHz",
                     RadioBand::Ghz6 => "6 GHz",
                 };
-                ui.label(egui::RichText::new(format!("{band}:  {:.0} dBm + {:.1} dBi{}", rd.tx_dbm, rd.gain_dbi, rd.eirp_cap_dbm.map_or(String::new(), |c| format!(" (max {c:.0} dBm EIRP)")))).size(13.0));
+                ui.label(egui::RichText::new(format!("{band}:  {:.0} dBm + {:.1} dBi{}", rd.tx_dbm, rd.gain_dbi, rd.eirp_cap_dbm.map_or(String::new(), |c| format!(" (max {c:.0} dBm EIRP)")))).text_style(egui::TextStyle::Body));
             }
             if ui.small_button("Use custom power instead").clicked() {
                 edits.push(ApEdit::Custom);
@@ -1901,7 +1908,7 @@ impl FloorTab {
         if picked.len() == 1 && first.existing {
             let options = Self::measured_aps(floor);
             if !options.is_empty() {
-                ui.label(egui::RichText::new("Measured as").size(12.5).color(r.on_surface_variant));
+                ui.label(egui::RichText::new("Measured as").text_style(egui::TextStyle::Body).color(r.on_surface_variant));
                 let current = first.link.as_ref().and_then(|k| options.iter().find(|o| &o.0 == k)).map_or("Not linked".to_string(), |o| o.1.clone());
                 egui::ComboBox::from_id_salt("ap_link").selected_text(current).width(230.0).show_ui(ui, |ui| {
                     if ui.selectable_label(first.link.is_none(), "Not linked").clicked() {
@@ -2284,8 +2291,8 @@ impl FloorTab {
                     .show(ui, |ui| {
                         ui.set_width(300.0);
                         ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(format!("Point #{}", i + 1)).size(16.0));
-                            ui.label(egui::RichText::new(format!("{} APs, {} s dwell", p.observations.len(), p.dwell_secs)).size(12.5).color(r.on_surface_variant));
+                            ui.label(theme::heading(ui, format!("Point #{}", i + 1)));
+                            ui.label(egui::RichText::new(format!("{} APs, {} s dwell", p.observations.len(), p.dwell_secs)).text_style(egui::TextStyle::Body).color(r.on_surface_variant));
                         });
                         let mut obs: Vec<_> = p.observations.iter().collect();
                         obs.sort_by(|a, b| b.signal_dbm.total_cmp(&a.signal_dbm));
@@ -2343,13 +2350,13 @@ impl FloorTab {
             .pivot(egui::Align2::RIGHT_TOP)
             .fixed_pos(canvas.right_top() + Vec2::new(-12.0, 12.0))
             .show(ctx, |ui| {
-                let (rect, resp) = ui.allocate_exact_size(Vec2::splat(LAYERS_BUTTON), Sense::click());
+                let (rect, resp) = ui.allocate_exact_size(Vec2::splat(round_size(ctx)), Sense::click());
                 let fill = if open { r.secondary_container } else { r.surface_container_high };
                 let fill = if resp.hovered() { theme::state_layer(fill, r.on_surface, 0.08) } else { fill };
                 let painter = ui.painter();
-                painter.rect(rect, LAYERS_BUTTON / 2.0, fill, Stroke::new(1.0, r.outline_variant), egui::StrokeKind::Inside);
+                painter.rect(rect, round_size(ctx) / 2.0, fill, Stroke::new(1.0, r.outline_variant), egui::StrokeKind::Inside);
                 if let Some(icon) = &self.layers_icon {
-                    let side = LAYERS_BUTTON * 0.5;
+                    let side = round_size(ctx) * 0.5;
                     let colour = if open { r.on_secondary_container } else { r.on_surface };
                     painter.image(icon.id(), Rect::from_center_size(rect.center(), Vec2::splat(side)), Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), colour);
                 }
@@ -2368,15 +2375,15 @@ impl FloorTab {
         egui::Area::new(egui::Id::unique("devices_button"))
             .order(egui::Order::Foreground)
             .pivot(egui::Align2::RIGHT_TOP)
-            .fixed_pos(canvas.right_top() + Vec2::new(-12.0, 12.0 + LAYERS_BUTTON + 8.0))
+            .fixed_pos(canvas.right_top() + Vec2::new(-12.0, 12.0 + round_size(ctx) + 8.0))
             .show(ctx, |ui| {
-                let (rect, resp) = ui.allocate_exact_size(Vec2::splat(LAYERS_BUTTON), Sense::click());
+                let (rect, resp) = ui.allocate_exact_size(Vec2::splat(round_size(ctx)), Sense::click());
                 let fill = if open { r.secondary_container } else { r.surface_container_high };
                 let fill = if resp.hovered() { theme::state_layer(fill, r.on_surface, 0.08) } else { fill };
                 let painter = ui.painter();
-                painter.rect(rect, LAYERS_BUTTON / 2.0, fill, Stroke::new(1.0, r.outline_variant), egui::StrokeKind::Inside);
+                painter.rect(rect, round_size(ctx) / 2.0, fill, Stroke::new(1.0, r.outline_variant), egui::StrokeKind::Inside);
                 let colour = if open { r.on_secondary_container } else { r.on_surface };
-                painter.text(rect.center(), egui::Align2::CENTER_CENTER, ICON_ROUTER.codepoint, egui::FontId::new(LAYERS_BUTTON * 0.5, ICON_ROUTER.font_family()), colour);
+                painter.text(rect.center(), egui::Align2::CENTER_CENTER, ICON_ROUTER.codepoint, egui::FontId::new(round_size(ctx) * 0.5, ICON_ROUTER.font_family()), colour);
                 toggled = resp.on_hover_text("Add Devices").clicked();
             });
         if toggled {

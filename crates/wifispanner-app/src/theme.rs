@@ -284,7 +284,7 @@ fn shape_style(style: &mut egui::Style, density: Density) {
     style.text_styles = [
         (TextStyle::Heading, FontId::new(24.0, FontFamily::Proportional)),
         (TextStyle::Body, FontId::new(15.0 * density.font_scale(), FontFamily::Proportional)),
-        (TextStyle::Button, FontId::new(15.0, medium)),
+        (TextStyle::Button, FontId::new(15.0 * density.font_scale(), medium)),
         (TextStyle::Small, FontId::new(12.0 * density.font_scale().max(0.9), FontFamily::Proportional)),
         (TextStyle::Monospace, FontId::new(14.0 * density.font_scale(), FontFamily::Monospace)),
     ]
@@ -361,6 +361,12 @@ pub fn shadow(color: Color32, blur: u8, alpha: f32) -> egui::Shadow {
 }
 
 /// Medium-weight text, for headers and labels that need emphasis.
+/// A heading inside a menu: the body size in the medium weight, in the accent colour.
+pub fn heading(ui: &egui::Ui, text: impl Into<String>) -> egui::RichText {
+    let size = TextStyle::Body.resolve(ui.style()).size;
+    egui::RichText::new(text).font(FontId::new(size * 1.1, FontFamily::Name(MEDIUM.into()))).color(roles(ui.ctx()).primary)
+}
+
 pub fn medium(text: impl Into<String>) -> egui::RichText {
     egui::RichText::new(text).family(FontFamily::Name(MEDIUM.into()))
 }
@@ -406,7 +412,8 @@ fn pill(ui: &mut egui::Ui, style: PillStyle, icon: Option<egui_material_icons::M
     let height = density(ui.ctx()).button_height();
     let font = TextStyle::Button.resolve(ui.style());
     let text = ui.painter().layout_no_wrap(label.to_string(), font, style.fg);
-    let (pad, gap, icon_size) = ((height / 2.0).clamp(14.0, 20.0), 8.0, 20.0);
+    let scale = density(ui.ctx()).font_scale();
+    let (pad, gap, icon_size) = ((height / 2.0).clamp(14.0, 20.0), 8.0 * scale, 20.0 * scale);
     let icon_galley = icon.map(|i| ui.painter().layout_no_wrap(i.codepoint.to_string(), FontId::new(icon_size, i.font_family()), style.fg));
     let icon_w = icon_galley.as_ref().map_or(0.0, |g| g.size().x + gap);
     let content_w = icon_w + text.size().x;
