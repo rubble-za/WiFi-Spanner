@@ -1814,7 +1814,7 @@ impl FloorTab {
     }
 
     /// The "Add Devices" menu: a searchable list of models to place.
-    fn devices_content(&self, ui: &mut egui::Ui, floor: &Floor, room: f32, edits: &mut Vec<ApEdit>) {
+    fn devices_content(&self, ui: &mut egui::Ui, floor: &Floor, _room: f32, edits: &mut Vec<ApEdit>) {
         let r = theme::roles(ui.ctx());
         ui.label(theme::heading(ui, "Add Devices"));
         let layer = floor.layer(self.mode == WorkMode::Plan);
@@ -1841,8 +1841,10 @@ impl FloorTab {
         }
         // Below the title, counts, hint, search and the custom row.
         let row_h = 28.0 * theme::density(ui.ctx()).font_scale() + ui.spacing().item_spacing.y;
-        let list_height = (7.0 * row_h).min((room - 150.0).max(2.0 * row_h));
-        egui::ScrollArea::vertical().max_height(list_height).auto_shrink([false, true]).show(ui, |ui| {
+        // Always seven models in view before it scrolls, whatever the window size: the menu
+        // moves up to make room rather than the list shrinking.
+        let list_height = 7.0 * row_h + 2.0;
+        egui::ScrollArea::vertical().min_scrolled_height(list_height).max_height(list_height).auto_shrink([false, true]).show(ui, |ui| {
             for m in catalog::search(&self.models, &self.model_search) {
                 let on = current.as_deref() == Some(m.id().as_str());
                 let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0 * theme::density(ui.ctx()).font_scale()), Sense::click());
