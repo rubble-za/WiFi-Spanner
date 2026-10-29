@@ -62,6 +62,28 @@ pub fn interpolate(samples: &[Sample], img_w: u32, img_h: u32, max_cells: usize,
     Grid { w, h, dbm, confidence, step_px: step }
 }
 
+/// Distance in plan pixels over which a heatmap's confidence fades out from a
+/// survey point. It is `fade_m` metres when the scale is known, but kept
+/// between 4% and 80% of the plan's longer side so that a wrong scale (for
+/// example from two nearly identical clicks) cannot shrink the measured area
+/// to nothing and leave the whole map looking unmeasured.
+pub fn fade_px(fade_m: f32, metres_per_px: Option<f32>, img_w: u32, img_h: u32) -> f32 {
+    let longest = img_w.max(img_h).max(1) as f32;
+    match metres_per_px.filter(|m| m.is_finite() && *m > 0.0) {
+        Some(m) => (fade_m / m).clamp(longest * 0.04, longest * 0.8),
+        None => longest * 0.25,
+    }
+}
+
+/// Plan sizes (the longer side, in metres) a calibrated scale may imply.
+/// Anything outside is almost certainly a calibration mistake.
+pub const PLAUSIBLE_PLAN_M: std::ops::RangeInclusive<f32> = 1.0..=2000.0;
+
+/// Whether a scale gives a believable plan size.
+pub fn scale_is_plausible(metres_per_px: f32, img_w: u32, img_h: u32) -> bool {
+    PLAUSIBLE_PLAN_M.contains(&(img_w.max(img_h) as f32 * metres_per_px))
+}
+
 /// Thresholds for rating coverage, in dBm. Roughly: enough for reliable
 /// video and voice, enough for browsing, and below that.
 pub const GOOD_DBM: f64 = -67.0;
@@ -191,5 +213,24 @@ mod tests {
             assert_ne!(color_in(scheme, -60.0, -90.0, -45.0), color_in(scheme, -60.0, -70.0, -50.0));
         }
         assert_eq!(color_for(-60.0), color_in(ColorScheme::Classic, -60.0, RAMP_MIN, RAMP_MAX));
+    }
+
+    #[test]
+    fn fade_distance_follows_the_scale_but_survives_a_wrong_one() {
+        // 8 m at 0.05 m/px is 160 px: exactly the 4% floor of a 4000 px plan.
+        assert_eq!(fade_px(8.0, Some(0.05), 2828, 4000), 160.0);
+        assert_eq!(fade_px(20.0, Some(0.05), 2828, 4000), 400.0);
+        // The real-world mistake: 13 m per pixel would give 0.6 px.
+        assert_eq!(fade_px(8.0, Some(13.28), 2828, 4000), 160.0);
+        assert_eq!(fade_px(8.0, Some(0.00001), 2828, 4000), 3200.0);
+        assert_eq!(fade_px(8.0, None, 2828, 4000), 1000.0);
+        assert_eq!(fade_px(8.0, Some(f32::NAN), 2828, 4000), 1000.0);
+    }
+
+    #[test]
+    fn implausible_plan_sizes_are_recognised() {
+        assert!(scale_is_plausible(0.0525, 2828, 4000), "a house is about 210 m across at this scale: fine");
+        assert!(!scale_is_plausible(13.28, 2828, 4000), "53 km");
+        assert!(!scale_is_plausible(0.0001, 2828, 4000), "0.4 m");
     }
 }

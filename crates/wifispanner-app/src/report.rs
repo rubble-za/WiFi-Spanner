@@ -129,10 +129,7 @@ fn grid_for(floor: &Floor, view: &View, style: &ReportStyle) -> Grid {
         .iter()
         .map(|p| Sample { x: p.x, y: p.y, dbm: Floor::signal_at_min(p, &view.target, view.band, style.detect_dbm) })
         .collect();
-    let fade_px = match floor.metres_per_px {
-        Some(m) => FADE_M / m,
-        None => floor.width_px.max(floor.height_px) as f32 * 0.25,
-    };
+    let fade_px = heatmap::fade_px(FADE_M, floor.metres_per_px, floor.width_px, floor.height_px);
     heatmap::interpolate(&samples, floor.width_px, floor.height_px, HEAT_CELLS, fade_px)
 }
 

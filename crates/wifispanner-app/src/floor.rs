@@ -39,8 +39,26 @@ const THUMB_SIDE_PX: f32 = 360.0;
 const THUMB_CELL: f32 = 170.0;
 /// Heatmap grid resolution along the longer side.
 const HEAT_CELLS: usize = 256;
+/// The two points used to set the scale must be at least this far apart (plan
+/// pixels): closer than that (a double-click, say) the result is meaningless.
+const MIN_SCALE_PX: f32 = 25.0;
 /// A click this close (screen pixels) to a marker selects it instead of scanning.
 const PICK_RADIUS: f32 = 10.0;
+
+/// The scale (metres per plan pixel) implied by `metres` between two points
+/// `px_apart` pixels apart on a plan of `w` x `h` pixels, or why it is not
+/// believable.
+fn check_scale(px_apart: f32, metres: f32, w: u32, h: u32) -> Result<f32, String> {
+    if px_apart < MIN_SCALE_PX {
+        return Err(format!("The two points are only {px_apart:.0} px apart. Cancel and click two points much further apart."));
+    }
+    let mpp = metres / px_apart;
+    if !heatmap::scale_is_plausible(mpp, w, h) {
+        let plan_m = w.max(h) as f32 * mpp;
+        return Err(format!("That would make the plan {plan_m:.0} m across, which looks wrong. Check the distance you entered."));
+    }
+    Ok(mpp)
+}
 
 pub struct FloorTab {
     project: Option<Project>,
@@ -350,6 +368,12 @@ impl FloorTab {
             if let Some(f) = self.project.as_ref().map(|p| &p.floor) {
                 ui.separator();
                 match f.metres_per_px {
+                    Some(m) if !heatmap::scale_is_plausible(m, f.width_px, f.height_px) => ui
+                        .colored_label(theme::roles(ui.ctx()).error, "Scale looks wrong")
+                        .on_hover_text(format!(
+                            "The scale makes this plan {:.0} m across. Choose Set scale and click two points a known distance apart to redo it.",
+                            f.width_px.max(f.height_px) as f32 * m
+                        )),
                     Some(m) => ui.label(format!("Scale: {:.1} px/m", 1.0 / m)),
                     None => ui.colored_label(Color32::from_rgb(240, 140, 50), "Scale not set"),
                 };
@@ -596,6 +620,12 @@ impl FloorTab {
                 if self.scale_clicks.len() >= 2 {
                     self.scale_clicks.clear();
                 }
+                if let Some(first) = self.scale_clicks.first()
+                    && first.distance(plan) < MIN_SCALE_PX
+                {
+                    self.status = "Click a second point further from the first one (at least the other end of a known distance).".into();
+                    return;
+                }
                 self.scale_clicks.push(plan);
                 if self.scale_clicks.len() == 2 {
                     self.scale_input.clear();
@@ -621,18 +651,30 @@ impl FloorTab {
             return;
         }
         let (a, b) = (self.scale_clicks[0], self.scale_clicks[1]);
+        let (w, h) = self.project.as_ref().map_or((1, 1), |p| (p.floor.width_px, p.floor.height_px));
         let mut done = false;
         theme::dialog(ctx, "Set scale", 380.0, |ui| {
             ui.label(format!("The two points are {:.0} px apart. What is that distance in metres?", a.distance(b)));
             ui.add_space(8.0);
             let edit = ui.add(egui::TextEdit::singleline(&mut self.scale_input).hint_text("Distance in metres").desired_width(f32::INFINITY));
             edit.request_focus();
-            let metres = self.scale_input.trim().replace(',', ".").parse::<f32>().ok().filter(|m| *m > 0.0);
+            let metres = self.scale_input.trim().replace(',', ".").parse::<f32>().ok().filter(|m| m.is_finite() && *m > 0.0);
+            // Typing nothing yet is not an error; a distance that cannot be right is.
+            let check = match metres {
+                Some(m) => Some(check_scale(a.distance(b), m, w, h)),
+                None if a.distance(b) < MIN_SCALE_PX => Some(check_scale(a.distance(b), 1.0, w, h)),
+                None => None,
+            };
+            if let Some(Err(why)) = &check {
+                ui.add_space(6.0);
+                ui.colored_label(theme::roles(ui.ctx()).error, why);
+            }
+            let scale = check.and_then(Result::ok);
             theme::actions(ui, |ui| {
-                let set = ui.add_enabled_ui(metres.is_some(), |ui| theme::button(ui, ButtonKind::Filled, None, "Set scale")).inner;
-                let ok = set.clicked() || (edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && metres.is_some());
-                if ok && let (Some(m), Some(p)) = (metres, self.project.as_mut()) {
-                    p.floor.metres_per_px = Some(m / a.distance(b).max(0.001));
+                let set = ui.add_enabled_ui(scale.is_some(), |ui| theme::button(ui, ButtonKind::Filled, None, "Set scale")).inner;
+                let ok = set.clicked() || (edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && scale.is_some());
+                if ok && let (Some(mpp), Some(p)) = (scale, self.project.as_mut()) {
+                    p.floor.metres_per_px = Some(mpp);
                     self.status = "Scale set. Switch to \"Survey point\" and click where you are standing.".into();
                     self.tool = Tool::Survey;
                     self.heat_dirty = true;
@@ -657,10 +699,7 @@ impl FloorTab {
             .iter()
             .map(|p| Sample { x: p.x, y: p.y, dbm: Floor::signal_at_min(p, &self.target, self.band, self.view.detect_dbm) })
             .collect();
-        let fade_px = match floor.metres_per_px {
-            Some(m) => self.fade_m / m,
-            None => floor.width_px.max(floor.height_px) as f32 * 0.25,
-        };
+        let fade_px = heatmap::fade_px(self.fade_m, floor.metres_per_px, floor.width_px, floor.height_px);
         let grid = heatmap::interpolate(&samples, floor.width_px, floor.height_px, HEAT_CELLS, fade_px);
         let pixels = (0..grid.w * grid.h)
             .map(|i| {
@@ -704,4 +743,18 @@ fn draw_legend(painter: &egui::Painter, rect: Rect, view: &Settings) {
     let font = egui::FontId::proportional(12.0);
     painter.text(origin + Vec2::new(0.0, h + 2.0), egui::Align2::LEFT_TOP, format!("{:.0} dBm", view.min_dbm), font.clone(), Color32::WHITE);
     painter.text(origin + Vec2::new(w, h + 2.0), egui::Align2::RIGHT_TOP, format!("{:.0}+", view.max_dbm), font, Color32::WHITE);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scale_checks_reject_close_points_and_absurd_plan_sizes() {
+        assert!(check_scale(1.0, 13.0, 2828, 4000).unwrap_err().contains("only 1 px apart"));
+        let mpp = check_scale(190.0, 10.0, 2828, 4000).unwrap();
+        assert!((mpp - 0.0526).abs() < 0.001);
+        assert!(check_scale(100.0, 100_000.0, 2828, 4000).unwrap_err().contains("looks wrong"));
+        assert!(check_scale(100.0, 0.001, 2828, 4000).unwrap_err().contains("looks wrong"));
+    }
 }
