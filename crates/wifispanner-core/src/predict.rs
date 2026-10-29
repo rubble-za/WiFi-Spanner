@@ -16,7 +16,43 @@ use wifispanner_scan::Band;
 use crate::heatmap::Grid;
 use crate::survey::Floor;
 
-/// An access point placed in the planner.
+/// A frequency band, in a form that can be saved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum RadioBand {
+    Ghz2_4,
+    Ghz5,
+    Ghz6,
+}
+
+impl RadioBand {
+    pub const ALL: [RadioBand; 3] = [RadioBand::Ghz2_4, RadioBand::Ghz5, RadioBand::Ghz6];
+
+    pub fn band(self) -> Band {
+        match self {
+            RadioBand::Ghz2_4 => Band::Ghz2_4,
+            RadioBand::Ghz5 => Band::Ghz5,
+            RadioBand::Ghz6 => Band::Ghz6,
+        }
+    }
+
+    pub fn from_band(b: Band) -> Self {
+        match b {
+            Band::Ghz2_4 => RadioBand::Ghz2_4,
+            Band::Ghz5 => RadioBand::Ghz5,
+            Band::Ghz6 => RadioBand::Ghz6,
+        }
+    }
+}
+
+/// One radio of an access point: its band, transmit power and antenna gain.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Radio {
+    pub band: RadioBand,
+    pub tx_dbm: f32,
+    pub gain_dbi: f32,
+}
+
+/// An access point on the plan: one that is really there, or one being planned.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlannedAp {
     pub name: String,
@@ -25,9 +61,26 @@ pub struct PlannedAp {
     pub y: f32,
     /// Mounting height above the floor, in metres.
     pub height_m: f32,
+    /// Used for any band the access point has no entry in `radios` for, when
+    /// `radios` is empty: a plain AP with one power and gain on every band.
     pub tx_dbm: f32,
     pub gain_dbi: f32,
     pub enabled: bool,
+    /// True for an access point that is installed (plotted while surveying);
+    /// false for one only planned.
+    #[serde(default)]
+    pub existing: bool,
+    /// The catalogue model it was taken from, if any.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Per-band power and gain, from the model or set by hand. Empty means
+    /// `tx_dbm` and `gain_dbi` on every band; otherwise only these bands exist.
+    #[serde(default)]
+    pub radios: Vec<Radio>,
+    /// The measured access point this stands for (see [`crate::survey::ap_base_key`]),
+    /// so reports can place it where it really is.
+    #[serde(default)]
+    pub link: Option<String>,
 }
 
 impl PlannedAp {
@@ -36,7 +89,29 @@ impl PlannedAp {
     pub const DEFAULT_GAIN_DBI: f32 = 3.0;
 
     pub fn new(name: String, x: f32, y: f32) -> Self {
-        PlannedAp { name, x, y, height_m: Self::DEFAULT_HEIGHT_M, tx_dbm: Self::DEFAULT_TX_DBM, gain_dbi: Self::DEFAULT_GAIN_DBI, enabled: true }
+        PlannedAp {
+            name,
+            x,
+            y,
+            height_m: Self::DEFAULT_HEIGHT_M,
+            tx_dbm: Self::DEFAULT_TX_DBM,
+            gain_dbi: Self::DEFAULT_GAIN_DBI,
+            enabled: true,
+            existing: false,
+            model: None,
+            radios: Vec::new(),
+            link: None,
+        }
+    }
+
+    /// Transmit power and antenna gain on a band, or `None` when the access
+    /// point has no radio there.
+    pub fn radio(&self, band: Band) -> Option<(f32, f32)> {
+        if self.radios.is_empty() {
+            return Some((self.tx_dbm, self.gain_dbi));
+        }
+        let b = RadioBand::from_band(band);
+        self.radios.iter().find(|r| r.band == b).map(|r| (r.tx_dbm, r.gain_dbi))
     }
 }
 
@@ -116,10 +191,10 @@ fn walls_between(walls: &[MetreWall], from: [f32; 3], to: [f32; 3]) -> f32 {
 }
 
 /// Signal in dBm at `rx` (x, y, height in metres) from one AP.
-fn signal_from(ap: &PlannedAp, ap_xy_m: [f32; 2], rx: [f32; 3], walls: &[MetreWall], band: Band) -> f32 {
+fn signal_from(ap: &PlannedAp, eirp_dbm: f32, ap_xy_m: [f32; 2], rx: [f32; 3], walls: &[MetreWall], band: Band) -> f32 {
     let from = [ap_xy_m[0], ap_xy_m[1], ap.height_m];
     let d = ((rx[0] - from[0]).powi(2) + (rx[1] - from[1]).powi(2) + (rx[2] - from[2]).powi(2)).sqrt().max(1.0);
-    ap.tx_dbm + ap.gain_dbi - loss_at_1m(band) - 10.0 * PATH_LOSS_EXPONENT * d.log10() - walls_between(walls, from, rx)
+    eirp_dbm - loss_at_1m(band) - 10.0 * PATH_LOSS_EXPONENT * d.log10() - walls_between(walls, from, rx)
 }
 
 /// Why a prediction cannot be made.
@@ -133,7 +208,7 @@ impl std::fmt::Display for Unavailable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Unavailable::NoScale => "Set the plan's scale first, so distances are real.",
-            Unavailable::NoAps => "Place an access point to see predicted coverage.",
+            Unavailable::NoAps => "No access point on this band yet. Plot the existing ones while surveying, or place planned ones here.",
         })
     }
 }
@@ -142,7 +217,8 @@ impl std::fmt::Display for Unavailable {
 /// floor, for receivers `rx_height_m` above the floor.
 pub fn predict(floor: &Floor, band: Band, rx_height_m: f32) -> Result<Grid, Unavailable> {
     let mpp = floor.metres_per_px.filter(|m| m.is_finite() && *m > 0.0).ok_or(Unavailable::NoScale)?;
-    let aps: Vec<&PlannedAp> = floor.aps.iter().filter(|a| a.enabled).collect();
+    // Enabled access points with a radio on this band, and what each radiates.
+    let aps: Vec<(&PlannedAp, f32)> = floor.aps.iter().filter(|a| a.enabled).filter_map(|a| a.radio(band).map(|(tx, gain)| (a, tx + gain))).collect();
     if aps.is_empty() {
         return Err(Unavailable::NoAps);
     }
@@ -151,7 +227,7 @@ pub fn predict(floor: &Floor, band: Band, rx_height_m: f32) -> Result<Grid, Unav
     let w = ((floor.width_px as f32 / step).ceil() as usize).max(1);
     let h = ((floor.height_px as f32 / step).ceil() as usize).max(1);
     let walls = metre_walls(floor, mpp, band);
-    let ap_m: Vec<[f32; 2]> = aps.iter().map(|a| [a.x * mpp, a.y * mpp]).collect();
+    let ap_m: Vec<[f32; 2]> = aps.iter().map(|(a, _)| [a.x * mpp, a.y * mpp]).collect();
     let mut dbm = vec![0.0f32; w * h];
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(h);
     let rows_per = h.div_ceil(threads);
@@ -163,7 +239,7 @@ pub fn predict(floor: &Floor, band: Band, rx_height_m: f32) -> Result<Grid, Unav
                     let index = chunk_index * rows_per * w + i;
                     let (gx, gy) = (index % w, index / w);
                     let rx = [(gx as f32 + 0.5) * step * mpp, (gy as f32 + 0.5) * step * mpp, rx_height_m];
-                    *cell = aps.iter().zip(ap_m).map(|(ap, xy)| signal_from(ap, *xy, rx, walls, band)).fold(f32::MIN, f32::max);
+                    *cell = aps.iter().zip(ap_m).map(|((ap, eirp), xy)| signal_from(ap, *eirp, *xy, rx, walls, band)).fold(f32::MIN, f32::max);
                 }
             });
         }
@@ -251,6 +327,32 @@ mod tests {
         let (a, b) = (predict(&only_far, Band::Ghz5, 1.0).unwrap(), predict(&both, Band::Ghz5, 1.0).unwrap());
         assert!(at(&b, 0.1, 2.0, 5.0) > at(&a, 0.1, 2.0, 5.0) + 10.0);
         assert!((at(&a, 0.1, 18.0, 5.0) - at(&b, 0.1, 18.0, 5.0)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn an_ap_only_covers_the_bands_it_has_radios_for() {
+        let mut dual = ap(100.0, 50.0, 2.7);
+        dual.radios = vec![
+            Radio { band: RadioBand::Ghz2_4, tx_dbm: 22.0, gain_dbi: 4.0 },
+            Radio { band: RadioBand::Ghz5, tx_dbm: 26.0, gain_dbi: 6.0 },
+        ];
+        assert_eq!(dual.radio(Band::Ghz5), Some((26.0, 6.0)));
+        assert_eq!(dual.radio(Band::Ghz6), None);
+        let f = floor(vec![dual.clone()], vec![]);
+        assert!(predict(&f, Band::Ghz5, 1.0).is_ok());
+        assert_eq!(predict(&f, Band::Ghz6, 1.0).unwrap_err(), Unavailable::NoAps, "no 6 GHz radio");
+        // The 5 GHz radio is 9 dB hotter than a plain AP's 20 dBm + 3 dBi.
+        let plain = floor(vec![ap(100.0, 50.0, 2.7)], vec![]);
+        let diff = at(&predict(&f, Band::Ghz5, 1.0).unwrap(), 0.1, 12.0, 5.0) - at(&predict(&plain, Band::Ghz5, 1.0).unwrap(), 0.1, 12.0, 5.0);
+        assert!((diff - 9.0).abs() < 0.01, "{diff}");
+    }
+
+    #[test]
+    fn older_projects_with_plain_aps_still_open() {
+        let old = r#"{"name":"a","x":1.0,"y":2.0,"height_m":2.7,"tx_dbm":20.0,"gain_dbi":3.0,"enabled":true}"#;
+        let a: PlannedAp = serde_json::from_str(old).unwrap();
+        assert!(!a.existing && a.radios.is_empty() && a.model.is_none() && a.link.is_none());
+        assert_eq!(a.radio(Band::Ghz6), Some((20.0, 3.0)));
     }
 
     #[test]

@@ -219,6 +219,12 @@ pub fn ap_key(bssid: &str, band: Band) -> String {
     format!("{:02x}:{}:{}:{}:{}/{band}", first & !0x02, parts[1], parts[2], parts[3], parts[4]).to_lowercase()
 }
 
+/// Like [`ap_key`] but without the band, so an AP's radios on every band share it.
+pub fn ap_base_key(bssid: &str) -> String {
+    let key = ap_key(bssid, Band::Ghz5);
+    key.rsplit_once('/').map_or(key.clone(), |(base, _)| base.to_string())
+}
+
 /// Which APs a heatmap is drawn for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
@@ -362,6 +368,12 @@ mod tests {
         let p = Project::from_json(old).unwrap();
         assert!(p.floor().walls.is_empty());
         assert_eq!(p.floor().ceiling_m, crate::walls::DEFAULT_CEILING_M);
+    }
+
+    #[test]
+    fn an_aps_radios_share_a_base_key_across_bands() {
+        assert_eq!(ap_base_key("50:3d:d1:e7:4c:cc"), ap_base_key("52:3d:d1:e7:4c:ce"));
+        assert!(!ap_base_key("50:3d:d1:e7:4c:cc").contains('/'));
     }
 
     #[test]

@@ -10,8 +10,9 @@ use std::sync::mpsc::{self, Receiver, Sender};
 
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, Vec2};
 use wifispanner_core::heatmap::{self, Sample};
-use wifispanner_core::survey::{Floor, Project, SurveyPoint, Target};
-use wifispanner_core::predict::{self, PlannedAp};
+use wifispanner_core::survey::{Floor, Project, SurveyPoint, Target, ap_base_key};
+use wifispanner_core::catalog::{self, ApModel};
+use wifispanner_core::predict::{self, PlannedAp, Radio, RadioBand};
 use wifispanner_core::walls::{self, Wall};
 use wifispanner_core::Material;
 use wifispanner_scan::{Band, ScanResult};
@@ -47,8 +48,10 @@ enum Tool {
     Select,
     /// Line up the ghosted overlay floor with the active one by dragging it.
     Align,
-    /// Planning: place access points and move them.
+    /// Place access points (installed ones while surveying, planned ones while planning).
     Aps,
+    /// Pick several access points by clicking or dragging a box, and edit them together.
+    ApSelect,
 }
 
 /// Textures are capped at this size per side; positions stay in plan pixels.
@@ -130,9 +133,15 @@ pub struct FloorTab {
     pdf_picker: Option<PdfPicker>,
     mode: WorkMode,
     /// Planning: the AP picked or being dragged, what new APs start with, and the prediction shown.
-    aps_selected: Option<usize>,
+    aps_selected: BTreeSet<usize>,
     ap_drag: Option<usize>,
-    ap_template: (f32, f32, f32),
+    ap_box_start: Option<Pos2>,
+    /// New access points start like the last one edited.
+    ap_template: PlannedAp,
+    /// The model catalogue (built in plus the user's own), the user's own, and the open picker's search.
+    models: Vec<ApModel>,
+    user_models: Vec<ApModel>,
+    model_picker: Option<String>,
     show_pred: bool,
     pred_band: Band,
     rx_height: f32,
@@ -165,12 +174,20 @@ pub struct FloorTab {
 
 /// What the access point palette asked for.
 enum ApEdit {
+    Tool(Tool),
     Name(String),
     Height(f32),
     Tx(f32),
     Gain(f32),
     Enabled(bool),
+    Existing(bool),
     Delete,
+    Duplicate,
+    Model(ApModel),
+    Custom,
+    PickModel,
+    SaveModel,
+    Link(Option<String>),
 }
 
 /// What the floors palette asked for.
@@ -233,9 +250,13 @@ impl Default for FloorTab {
             view: Settings::default(),
             pdf_picker: None,
             mode: WorkMode::Survey,
-            aps_selected: None,
+            aps_selected: BTreeSet::new(),
             ap_drag: None,
-            ap_template: (PlannedAp::DEFAULT_HEIGHT_M, PlannedAp::DEFAULT_TX_DBM, PlannedAp::DEFAULT_GAIN_DBI),
+            ap_box_start: None,
+            ap_template: PlannedAp::new(String::new(), 0.0, 0.0),
+            models: Vec::new(),
+            user_models: Vec::new(),
+            model_picker: None,
             show_pred: true,
             pred_band: Band::Ghz5,
             rx_height: predict::DEFAULT_RX_HEIGHT_M,
@@ -489,7 +510,7 @@ impl FloorTab {
         self.selected_walls.clear();
         self.wall_start = None;
         self.wall_history.clear();
-        self.aps_selected = None;
+        self.aps_selected.clear();
         self.pred_dirty = true;
         self.needs_fit = true;
         self.heat_dirty = true;
@@ -693,7 +714,7 @@ impl FloorTab {
         self.tool = if mode == WorkMode::Plan { Tool::Aps } else { Tool::Survey };
         self.wall_start = None;
         self.selected_walls.clear();
-        self.aps_selected = None;
+        self.aps_selected.clear();
         self.pred_dirty = true;
     }
 
@@ -742,6 +763,7 @@ impl FloorTab {
         self.pdf_dialog(ctx);
         self.report_dialog(ctx);
         self.rename_dialog(ctx);
+        self.model_dialog(ctx);
     }
 
     /// Ask for a floor plan file (PNG, JPG or PDF) and load it.
@@ -806,8 +828,12 @@ impl FloorTab {
                 if self.mode == WorkMode::Survey && theme::chip(ui, self.tool == Tool::Survey, Some(ICON_PLACE), "Survey point").clicked() {
                     self.tool = Tool::Survey;
                 }
-                if self.mode == WorkMode::Plan && theme::chip(ui, self.tool == Tool::Aps, Some(ICON_ROUTER), "Access points").clicked() {
+                if theme::chip(ui, matches!(self.tool, Tool::Aps | Tool::ApSelect), Some(ICON_ROUTER), "Access points").clicked() {
                     self.tool = Tool::Aps;
+                }
+                // Planning only looks at the survey: it never scans.
+                if self.mode == WorkMode::Plan && theme::chip(ui, self.tool == Tool::Survey, Some(ICON_PLACE), "Survey data").clicked() {
+                    self.tool = Tool::Survey;
                 }
                 if theme::chip(ui, self.tool == Tool::Scale, Some(ICON_STRAIGHTEN), "Set scale").clicked() {
                     self.tool = Tool::Scale;
@@ -910,36 +936,139 @@ impl FloorTab {
         }
     }
 
-    fn apply_ap_edit(&mut self, edit: ApEdit) {
-        let Some(i) = self.aps_selected else { return };
-        let Some(p) = self.project.as_mut() else { return };
-        if i >= p.floor().aps.len() {
+    /// Load the model catalogue the first time it is needed.
+    fn ensure_models(&mut self) {
+        if !self.models.is_empty() {
             return;
         }
-        if matches!(edit, ApEdit::Delete) {
-            p.floor_mut().aps.remove(i);
-            self.aps_selected = None;
-        } else {
-            let ap = &mut p.floor_mut().aps[i];
-            match edit {
-                ApEdit::Name(n) => ap.name = n,
-                ApEdit::Height(h) => ap.height_m = h,
-                ApEdit::Tx(t) => ap.tx_dbm = t,
-                ApEdit::Gain(g) => ap.gain_dbi = g,
-                ApEdit::Enabled(e) => ap.enabled = e,
-                ApEdit::Delete => {}
+        self.user_models = std::fs::read_to_string(models_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        self.models = catalog::merged(self.user_models.clone());
+    }
+
+    fn apply_ap_edit(&mut self, edit: ApEdit) {
+        let selected: Vec<usize> = self.aps_selected.iter().copied().collect();
+        match edit {
+            ApEdit::Tool(t) => {
+                self.tool = t;
+                self.ap_drag = None;
+                self.ap_box_start = None;
+                return;
             }
-            // New access points start like the last one edited.
-            self.ap_template = (ap.height_m, ap.tx_dbm, ap.gain_dbi);
+            ApEdit::PickModel => {
+                self.ensure_models();
+                self.model_picker = Some(String::new());
+                return;
+            }
+            _ => {}
+        }
+        let Some(p) = self.project.as_mut() else { return };
+        let fl = p.floor_mut();
+        let selected: Vec<usize> = selected.into_iter().filter(|&i| i < fl.aps.len()).collect();
+        match edit {
+            ApEdit::Delete => {
+                let mut i = 0;
+                fl.aps.retain(|_| {
+                    i += 1;
+                    !selected.contains(&(i - 1))
+                });
+                self.aps_selected.clear();
+            }
+            ApEdit::Duplicate => {
+                let copies: Vec<PlannedAp> = selected.iter().map(|&i| PlannedAp { x: fl.aps[i].x + 18.0, y: fl.aps[i].y + 18.0, name: format!("{} copy", fl.aps[i].name), ..fl.aps[i].clone() }).collect();
+                self.aps_selected.clear();
+                for c in copies {
+                    fl.aps.push(c);
+                    self.aps_selected.insert(fl.aps.len() - 1);
+                }
+            }
+            ApEdit::SaveModel => {
+                if let [i] = selected[..] {
+                    let ap = &fl.aps[i];
+                    let radios = if ap.radios.is_empty() {
+                        vec![Radio { band: RadioBand::Ghz2_4, tx_dbm: ap.tx_dbm, gain_dbi: ap.gain_dbi }, Radio { band: RadioBand::Ghz5, tx_dbm: ap.tx_dbm, gain_dbi: ap.gain_dbi }]
+                    } else {
+                        ap.radios.clone()
+                    };
+                    let model = ApModel { vendor: "Custom".into(), name: ap.name.clone(), note: "Saved from a plan".into(), radios, verified: false };
+                    self.user_models.retain(|m| m.id() != model.id());
+                    self.user_models.push(model);
+                    if let Ok(text) = serde_json::to_string_pretty(&self.user_models) {
+                        let path = models_path();
+                        if let Some(dir) = path.parent() {
+                            let _ = std::fs::create_dir_all(dir);
+                        }
+                        let _ = std::fs::write(path, text);
+                    }
+                    self.models = catalog::merged(self.user_models.clone());
+                    self.status = format!("Saved \"{}\" to your models.", fl.aps[i].name);
+                }
+                return;
+            }
+            edit => {
+                for &i in &selected {
+                    let ap = &mut fl.aps[i];
+                    match &edit {
+                        ApEdit::Name(n) if selected.len() == 1 => ap.name = n.clone(),
+                        ApEdit::Name(_) => {}
+                        ApEdit::Height(h) => ap.height_m = *h,
+                        ApEdit::Tx(t) => ap.tx_dbm = *t,
+                        ApEdit::Gain(g) => ap.gain_dbi = *g,
+                        ApEdit::Enabled(e) => ap.enabled = *e,
+                        ApEdit::Existing(e) => ap.existing = *e,
+                        ApEdit::Model(m) => {
+                            ap.model = Some(m.id());
+                            ap.radios = m.radios.clone();
+                        }
+                        ApEdit::Custom => {
+                            ap.model = None;
+                            ap.radios.clear();
+                        }
+                        ApEdit::Link(l) if selected.len() == 1 => ap.link = l.clone(),
+                        _ => {}
+                    }
+                }
+                if let Some(&i) = selected.last() {
+                    let t = &fl.aps[i];
+                    self.ap_template = PlannedAp { name: String::new(), x: 0.0, y: 0.0, existing: false, link: None, ..t.clone() };
+                }
+            }
         }
         self.autosave();
+    }
+
+    /// Access points heard during the survey, strongest first, as (key, description).
+    fn measured_aps(floor: &Floor) -> Vec<(String, String)> {
+        let mut seen: std::collections::BTreeMap<String, (f64, std::collections::BTreeSet<String>, u32)> = Default::default();
+        for p in &floor.points {
+            for o in &p.observations {
+                let e = seen.entry(ap_base_key(&o.bssid)).or_insert((f64::MIN, Default::default(), o.channel));
+                if o.signal_dbm > e.0 {
+                    e.0 = o.signal_dbm;
+                    e.2 = o.channel;
+                }
+                if let Some(s) = o.ssid.as_ref().filter(|s| !s.is_empty()) {
+                    e.1.insert(s.clone());
+                }
+            }
+        }
+        let mut v: Vec<_> = seen.into_iter().collect();
+        v.sort_by(|a, b| b.1.0.total_cmp(&a.1.0));
+        v.into_iter()
+            .take(40)
+            .map(|(key, (best, ssids, ch))| {
+                let names = if ssids.is_empty() { "hidden".to_string() } else { ssids.into_iter().take(2).collect::<Vec<_>>().join(", ") };
+                (key.clone(), format!("{names}  ch {ch}  {best:.0} dBm  {}", &key[..key.len().min(11)]))
+            })
+            .collect()
     }
 
     /// The access point palette over the right of the plan.
     fn ap_bubble(&self, ctx: &egui::Context, canvas: Rect) -> Vec<ApEdit> {
         let r = theme::roles(ctx);
         let Some(floor) = self.project.as_ref().map(|p| p.floor()) else { return Vec::new() };
-        let selected = self.aps_selected.and_then(|i| floor.aps.get(i));
+        let picked: Vec<&PlannedAp> = self.aps_selected.iter().filter_map(|&i| floor.aps.get(i)).collect();
+        let selecting = self.tool == Tool::ApSelect;
+        let survey = self.mode == WorkMode::Survey;
         let mut edits = Vec::new();
         egui::Area::new(egui::Id::unique("ap_bubble"))
             .order(egui::Order::Foreground)
@@ -953,49 +1082,154 @@ impl FloorTab {
                     .inner_margin(14)
                     .shadow(theme::shadow(r.shadow, 16, 0.18))
                     .show(ui, |ui| {
-                        ui.set_width(230.0);
-                        ui.label(egui::RichText::new("Access points").size(15.0).color(r.on_surface_variant));
-                        let hint = match selected {
-                            Some(_) => "Drag to move it. Click empty space to add another.",
-                            None => "Click the plan to place an access point, or click one to edit it.",
+                        ui.set_width(250.0);
+                        ui.horizontal(|ui| {
+                            if theme::chip(ui, !selecting, Some(ICON_ROUTER), "Place").clicked() {
+                                edits.push(ApEdit::Tool(Tool::Aps));
+                            }
+                            if theme::chip(ui, selecting, Some(ICON_HIGHLIGHT_ALT), "Select").clicked() {
+                                edits.push(ApEdit::Tool(Tool::ApSelect));
+                            }
+                        });
+                        ui.add_space(6.0);
+                        let what = if survey { "installed access points" } else { "access points" };
+                        let hint = match (selecting, picked.len()) {
+                            (false, _) => format!("Click the plan to place one of the {what}; drag one to move it."),
+                            (true, 0) => "Click one, or drag a box over several. Shift or Ctrl adds to the selection.".to_string(),
+                            (true, 1) => "1 selected. Drag to move it.".to_string(),
+                            (true, n) => format!("{n} selected. Drag any to move them together."),
                         };
                         ui.label(egui::RichText::new(hint).size(12.5).color(r.on_surface_variant));
-                        ui.label(egui::RichText::new(format!("{} on this floor", floor.aps.len())).size(12.5).color(r.on_surface_variant));
-                        let Some(ap) = selected else { return };
+                        let (existing, planned) = (floor.aps.iter().filter(|a| a.existing).count(), floor.aps.iter().filter(|a| !a.existing).count());
+                        ui.label(egui::RichText::new(format!("{existing} installed, {planned} planned on this floor")).size(12.5).color(r.on_surface_variant));
+                        let Some(first) = picked.first() else { return };
                         ui.add_space(6.0);
-                        let mut name = ap.name.clone();
-                        if ui.add(egui::TextEdit::singleline(&mut name).desired_width(f32::INFINITY)).changed() {
-                            edits.push(ApEdit::Name(name));
+                        if picked.len() == 1 {
+                            let mut name = first.name.clone();
+                            if ui.add(egui::TextEdit::singleline(&mut name).desired_width(f32::INFINITY)).changed() {
+                                edits.push(ApEdit::Name(name));
+                            }
                         }
-                        let mut on = ap.enabled;
+                        let mut on = first.enabled;
                         if theme::switch_row(ui, &mut on, "Enabled").changed() {
                             edits.push(ApEdit::Enabled(on));
                         }
-                        let (mut h, mut t, mut g) = (ap.height_m, ap.tx_dbm, ap.gain_dbi);
-                        egui::Grid::new("ap_fields").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                        let mut inst = first.existing;
+                        if theme::switch_row(ui, &mut inst, "Installed (as built)").changed() {
+                            edits.push(ApEdit::Existing(inst));
+                        }
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new("Model").size(12.5).color(r.on_surface_variant));
+                        let label = first.model.clone().unwrap_or_else(|| "Custom (set power by hand)".into());
+                        if theme::button(ui, ButtonKind::Tonal, None, &label).clicked() {
+                            edits.push(ApEdit::PickModel);
+                        }
+                        if first.radios.is_empty() {
+                            let (mut t, mut g) = (first.tx_dbm, first.gain_dbi);
+                            egui::Grid::new("ap_power").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                                ui.label("Power, all bands");
+                                if ui.add(egui::DragValue::new(&mut t).range(0.0..=36.0).speed(0.1).suffix(" dBm").fixed_decimals(1)).changed() {
+                                    edits.push(ApEdit::Tx(t));
+                                }
+                                ui.end_row();
+                                ui.label("Antenna gain");
+                                if ui.add(egui::DragValue::new(&mut g).range(0.0..=20.0).speed(0.1).suffix(" dBi").fixed_decimals(1)).changed() {
+                                    edits.push(ApEdit::Gain(g));
+                                }
+                                ui.end_row();
+                            });
+                        } else {
+                            for rd in &first.radios {
+                                let band = match rd.band {
+                                    RadioBand::Ghz2_4 => "2.4 GHz",
+                                    RadioBand::Ghz5 => "5 GHz",
+                                    RadioBand::Ghz6 => "6 GHz",
+                                };
+                                ui.label(egui::RichText::new(format!("{band}:  {:.0} dBm + {:.1} dBi", rd.tx_dbm, rd.gain_dbi)).size(13.0));
+                            }
+                            if ui.small_button("Use custom power instead").clicked() {
+                                edits.push(ApEdit::Custom);
+                            }
+                        }
+                        let mut h = first.height_m;
+                        ui.horizontal(|ui| {
                             ui.label("Mount height");
                             if ui.add(egui::DragValue::new(&mut h).range(0.3..=30.0).speed(0.05).suffix(" m").fixed_decimals(2)).changed() {
                                 edits.push(ApEdit::Height(h));
                             }
-                            ui.end_row();
-                            ui.label("Transmit power");
-                            if ui.add(egui::DragValue::new(&mut t).range(0.0..=36.0).speed(0.1).suffix(" dBm").fixed_decimals(1)).changed() {
-                                edits.push(ApEdit::Tx(t));
-                            }
-                            ui.end_row();
-                            ui.label("Antenna gain");
-                            if ui.add(egui::DragValue::new(&mut g).range(0.0..=20.0).speed(0.1).suffix(" dBi").fixed_decimals(1)).changed() {
-                                edits.push(ApEdit::Gain(g));
-                            }
-                            ui.end_row();
                         });
-                        ui.add_space(6.0);
-                        if theme::button(ui, ButtonKind::Outlined, Some(ICON_DELETE), "Delete").clicked() {
-                            edits.push(ApEdit::Delete);
+                        if picked.len() == 1 && first.existing {
+                            let options = Self::measured_aps(floor);
+                            if !options.is_empty() {
+                                ui.label(egui::RichText::new("Measured as").size(12.5).color(r.on_surface_variant));
+                                let current = first.link.as_ref().and_then(|k| options.iter().find(|o| &o.0 == k)).map_or("Not linked".to_string(), |o| o.1.clone());
+                                egui::ComboBox::from_id_salt("ap_link").selected_text(current).width(230.0).show_ui(ui, |ui| {
+                                    if ui.selectable_label(first.link.is_none(), "Not linked").clicked() {
+                                        edits.push(ApEdit::Link(None));
+                                    }
+                                    for (key, text) in &options {
+                                        if ui.selectable_label(first.link.as_ref() == Some(key), text).clicked() {
+                                            edits.push(ApEdit::Link(Some(key.clone())));
+                                        }
+                                    }
+                                });
+                            }
                         }
+                        ui.add_space(6.0);
+                        ui.horizontal_wrapped(|ui| {
+                            if theme::button(ui, ButtonKind::Text, None, "Duplicate").clicked() {
+                                edits.push(ApEdit::Duplicate);
+                            }
+                            if picked.len() == 1 && theme::button(ui, ButtonKind::Text, None, "Save as model").clicked() {
+                                edits.push(ApEdit::SaveModel);
+                            }
+                            if theme::button(ui, ButtonKind::Outlined, Some(ICON_DELETE), "Delete").clicked() {
+                                edits.push(ApEdit::Delete);
+                            }
+                        });
                     });
             });
         edits
+    }
+
+    /// The searchable list of access point models.
+    fn model_dialog(&mut self, ctx: &egui::Context) {
+        let Some(query) = self.model_picker.as_mut() else { return };
+        let mut chosen: Option<ApModel> = None;
+        let (mut custom, mut close) = (false, false);
+        let models = &self.models;
+        theme::dialog(ctx, "Choose a model", 480.0, |ui| {
+            let edit = ui.add(egui::TextEdit::singleline(query).hint_text("Search, for example \"u7 pro\" or \"6e\"").desired_width(f32::INFINITY));
+            edit.request_focus();
+            let found = catalog::search(models, query);
+            ui.add_space(6.0);
+            egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                if found.is_empty() {
+                    ui.label("No model matches. Choose custom power, or save your own from an access point.");
+                }
+                for m in found {
+                    let trust = if m.verified { "checked against the maker's specs" } else { "typical values" };
+                    let text = format!("{}\n{}  |  {}", m.id(), m.note, trust);
+                    if ui.selectable_label(false, text).clicked() {
+                        chosen = Some(m.clone());
+                    }
+                    ui.add_space(2.0);
+                }
+            });
+            theme::actions(ui, |ui| {
+                close = theme::button(ui, ButtonKind::Text, None, "Close").clicked();
+                custom = theme::button(ui, ButtonKind::Tonal, None, "Custom power").clicked();
+            });
+        });
+        if let Some(m) = chosen {
+            self.model_picker = None;
+            self.apply_ap_edit(ApEdit::Model(m));
+        } else if custom {
+            self.model_picker = None;
+            self.apply_ap_edit(ApEdit::Custom);
+        } else if close || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.model_picker = None;
+        }
     }
 
     /// Remember the walls so that undo can bring them back. Edits that arrive
@@ -1239,43 +1473,81 @@ impl FloorTab {
         self.autosave();
     }
 
-    /// Place, pick and move access points: click empty space to add one,
-    /// click one to select it, drag it to move it.
+    /// Place, pick and move access points. Placing: click empty space to add
+    /// one. Selecting: click or drag a box, Shift or Ctrl adds. Either way,
+    /// dragging an access point moves it, and the whole selection with it.
     fn ap_input(&mut self, resp: &egui::Response, ui: &egui::Ui, zoom: f32, to_plan: &impl Fn(Pos2) -> Pos2, to_screen: &impl Fn(Pos2) -> Pos2, size: (f32, f32)) {
+        let selecting = self.tool == Tool::ApSelect;
+        let additive = ui.input(|i| i.modifiers.shift || i.modifiers.command);
         let near = |this: &Self, screen: Pos2| -> Option<usize> {
             this.project.as_ref()?.floor().aps.iter().position(|a| to_screen(Pos2::new(a.x, a.y)).distance(screen) <= AP_PICK_PX)
         };
         if resp.drag_started_by(egui::PointerButton::Primary) {
-            self.ap_drag = ui.input(|i| i.pointer.press_origin()).and_then(|p| near(self, p));
-            if self.ap_drag.is_some() {
-                self.aps_selected = self.ap_drag;
+            let origin = ui.input(|i| i.pointer.press_origin());
+            match origin.and_then(|p| near(self, p)) {
+                Some(i) => {
+                    if !self.aps_selected.contains(&i) {
+                        if !additive {
+                            self.aps_selected.clear();
+                        }
+                        self.aps_selected.insert(i);
+                    }
+                    self.ap_drag = Some(i);
+                }
+                None if selecting => self.ap_box_start = origin.map(to_plan),
+                None => {}
             }
         }
-        if let (Some(i), true) = (self.ap_drag, resp.dragged_by(egui::PointerButton::Primary)) {
+        if self.ap_drag.is_some() && resp.dragged_by(egui::PointerButton::Primary) {
             let d = resp.drag_delta() / zoom;
-            if let Some(a) = self.project.as_mut().and_then(|p| p.floor_mut().aps.get_mut(i)) {
-                a.x = (a.x + d.x).clamp(0.0, size.0);
-                a.y = (a.y + d.y).clamp(0.0, size.1);
+            let moving = self.aps_selected.clone();
+            if let Some(p) = self.project.as_mut() {
+                for i in moving {
+                    if let Some(a) = p.floor_mut().aps.get_mut(i) {
+                        a.x = (a.x + d.x).clamp(0.0, size.0);
+                        a.y = (a.y + d.y).clamp(0.0, size.1);
+                    }
+                }
             }
         }
-        if resp.drag_stopped_by(egui::PointerButton::Primary) && self.ap_drag.take().is_some() {
-            self.autosave();
+        if resp.drag_stopped_by(egui::PointerButton::Primary) {
+            if self.ap_drag.take().is_some() {
+                self.autosave();
+            } else if let (Some(a), Some(b)) = (self.ap_box_start.take(), resp.interact_pointer_pos().map(to_plan)) {
+                let (min, max) = (Pos2::new(a.x.min(b.x), a.y.min(b.y)), Pos2::new(a.x.max(b.x), a.y.max(b.y)));
+                if !additive {
+                    self.aps_selected.clear();
+                }
+                if let Some(p) = &self.project {
+                    let inside = p.floor().aps.iter().enumerate().filter(|(_, ap)| ap.x >= min.x && ap.x <= max.x && ap.y >= min.y && ap.y <= max.y).map(|(i, _)| i);
+                    self.aps_selected.extend(inside);
+                }
+            }
         }
         if resp.clicked()
             && let Some(click) = resp.interact_pointer_pos()
         {
-            match near(self, click) {
-                Some(i) => self.aps_selected = Some(i),
-                None => {
+            match (near(self, click), additive) {
+                (Some(i), true) => {
+                    if !self.aps_selected.remove(&i) {
+                        self.aps_selected.insert(i);
+                    }
+                }
+                (Some(i), false) => self.aps_selected = BTreeSet::from([i]),
+                (None, _) if selecting => {
+                    if !additive {
+                        self.aps_selected.clear();
+                    }
+                }
+                (None, _) => {
                     let p = to_plan(click);
                     if p.x >= 0.0 && p.y >= 0.0 && p.x <= size.0 && p.y <= size.1 {
-                        let (height_m, tx_dbm, gain_dbi) = self.ap_template;
+                        let installed = self.mode == WorkMode::Survey;
+                        let template = self.ap_template.clone();
                         if let Some(pr) = self.project.as_mut() {
                             let fl = pr.floor_mut();
-                            let mut ap = PlannedAp::new(format!("AP {}", fl.aps.len() + 1), p.x, p.y);
-                            (ap.height_m, ap.tx_dbm, ap.gain_dbi) = (height_m, tx_dbm, gain_dbi);
-                            fl.aps.push(ap);
-                            self.aps_selected = Some(fl.aps.len() - 1);
+                            fl.aps.push(PlannedAp { name: format!("AP {}", fl.aps.len() + 1), x: p.x, y: p.y, existing: installed, ..template });
+                            self.aps_selected = BTreeSet::from([fl.aps.len() - 1]);
                         }
                         self.autosave();
                     }
@@ -1286,7 +1558,13 @@ impl FloorTab {
             self.apply_ap_edit(ApEdit::Delete);
         }
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.aps_selected = None;
+            self.aps_selected.clear();
+        }
+        if selecting
+            && ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::A))
+            && let Some(p) = &self.project
+        {
+            self.aps_selected = (0..p.floor().aps.len()).collect();
         }
     }
 
@@ -1434,7 +1712,8 @@ impl FloorTab {
                         });
                         ui.add_space(6.0);
                         ui.horizontal(|ui| {
-                            if theme::button(ui, ButtonKind::Outlined, Some(ICON_DELETE), "Delete").clicked() {
+                            // Planning only looks at the survey; it never changes it.
+                            if self.mode == WorkMode::Survey && theme::button(ui, ButtonKind::Outlined, Some(ICON_DELETE), "Delete").clicked() {
                                 delete = true;
                             }
                             if theme::button(ui, ButtonKind::Text, None, "Close").clicked() {
@@ -1513,7 +1792,7 @@ impl FloorTab {
         // middle or right button then.
         let panning = if self.tool == Tool::Aps {
             resp.dragged() && self.ap_drag.is_none()
-        } else if matches!(self.tool, Tool::Select | Tool::Align) {
+        } else if matches!(self.tool, Tool::Select | Tool::Align | Tool::ApSelect) {
             resp.dragged_by(egui::PointerButton::Middle) || resp.dragged_by(egui::PointerButton::Secondary)
         } else {
             resp.dragged()
@@ -1571,7 +1850,7 @@ impl FloorTab {
             if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Z)) {
                 self.undo_walls();
             }
-        } else if self.tool == Tool::Aps {
+        } else if matches!(self.tool, Tool::Aps | Tool::ApSelect) {
             self.ap_input(&resp, ui, zoom, &to_plan, &to_screen, (img_w, img_h));
         } else if resp.clicked()
             && let Some(click) = resp.interact_pointer_pos()
@@ -1681,7 +1960,8 @@ impl FloorTab {
             painter.add(egui::Shape::line(path, Stroke::new(2.0, Color32::from_rgb(30, 90, 200).gamma_multiply(0.7))));
         }
         let radius = self.view.marker_size.radius();
-        for (i, p) in floor.points.iter().enumerate().filter(|_| self.mode == WorkMode::Survey) {
+        let radius = if self.mode == WorkMode::Plan { radius * 0.6 } else { radius };
+        for (i, p) in floor.points.iter().enumerate() {
             let c = to_screen(Pos2::new(p.x, p.y));
             let selected = self.selected == Some(i);
             painter.circle(c, radius + if selected { 2.0 } else { 0.0 }, Color32::from_rgb(30, 90, 200), Stroke::new(2.0, if selected { Color32::YELLOW } else { Color32::WHITE }));
@@ -1708,15 +1988,31 @@ impl FloorTab {
                 painter.line_segment([to_screen(self.scale_clicks[0]), c], Stroke::new(2.0, Color32::from_rgb(220, 50, 50)));
             }
         }
-        if self.mode == WorkMode::Plan {
-            for (i, a) in floor.aps.iter().enumerate() {
-                let c = to_screen(Pos2::new(a.x, a.y));
-                let selected = self.aps_selected == Some(i);
-                let fill = if a.enabled { Color32::from_rgb(30, 90, 200) } else { Color32::GRAY };
-                painter.circle(c, 11.0 + if selected { 2.0 } else { 0.0 }, fill, Stroke::new(2.0, if selected { Color32::YELLOW } else { Color32::WHITE }));
-                painter.text(c, egui::Align2::CENTER_CENTER, (i + 1).to_string(), egui::FontId::proportional(12.0), Color32::WHITE);
-                painter.text(c + Vec2::new(15.0, -4.0), egui::Align2::LEFT_BOTTOM, format!("{}  {:.1} m", a.name, a.height_m), egui::FontId::proportional(12.0), Color32::BLACK);
+        for (i, a) in floor.aps.iter().enumerate() {
+            // While surveying only the installed ones are of interest.
+            if self.mode == WorkMode::Survey && !a.existing {
+                continue;
             }
+            let c = to_screen(Pos2::new(a.x, a.y));
+            let selected = self.aps_selected.contains(&i);
+            let fill = match (a.enabled, a.existing) {
+                (false, _) => Color32::GRAY,
+                (true, true) => Color32::from_rgb(30, 90, 200),
+                (true, false) => Color32::from_rgb(30, 150, 90),
+            };
+            painter.circle(c, 11.0 + if selected { 2.0 } else { 0.0 }, fill, Stroke::new(2.0, if selected { Color32::YELLOW } else { Color32::WHITE }));
+            painter.text(c, egui::Align2::CENTER_CENTER, (i + 1).to_string(), egui::FontId::proportional(12.0), Color32::WHITE);
+            painter.text(c + Vec2::new(15.0, -4.0), egui::Align2::LEFT_BOTTOM, format!("{}  {:.1} m", a.name, a.height_m), egui::FontId::proportional(12.0), Color32::BLACK);
+        }
+        if self.tool == Tool::ApSelect
+            && let (Some(a), Some(b)) = (self.ap_box_start, ui.input(|i| i.pointer.hover_pos()))
+            && resp.dragged_by(egui::PointerButton::Primary)
+        {
+            let boxed = Rect::from_two_pos(to_screen(a), b);
+            let accent = theme::roles(ui.ctx()).primary;
+            painter.rect(boxed, 2.0, accent.gamma_multiply(0.15), Stroke::new(1.5, accent), egui::StrokeKind::Inside);
+        }
+        if self.mode == WorkMode::Plan {
             if self.show_pred {
                 if let Some(note) = &self.pred_note {
                     painter.text(rect.center_top() + Vec2::new(0.0, 14.0), egui::Align2::CENTER_TOP, note, egui::FontId::proportional(16.0), Color32::from_rgb(240, 140, 50));
@@ -1733,7 +2029,7 @@ impl FloorTab {
                 self.apply_wall_edit(edit);
             }
         }
-        if self.tool == Tool::Aps {
+        if matches!(self.tool, Tool::Aps | Tool::ApSelect) {
             for edit in self.ap_bubble(ui.ctx(), rect) {
                 self.apply_ap_edit(edit);
             }
@@ -1744,7 +2040,7 @@ impl FloorTab {
                 self.apply_floor_edit(ui.ctx(), edit);
             }
         }
-        if self.mode == WorkMode::Survey && !matches!(self.tool, Tool::Walls | Tool::Select) {
+        if self.tool == Tool::Survey {
             self.point_bubble(ui.ctx(), rect);
         }
     }
@@ -1755,7 +2051,7 @@ impl FloorTab {
             return;
         }
         match self.tool {
-            Tool::Walls | Tool::Select | Tool::Align | Tool::Aps => {}
+            Tool::Walls | Tool::Select | Tool::Align | Tool::Aps | Tool::ApSelect => {}
             Tool::Scale => {
                 if self.scale_clicks.len() >= 2 {
                     self.scale_clicks.clear();
@@ -1778,7 +2074,7 @@ impl FloorTab {
                     .position(|p| to_screen(Pos2::new(p.x, p.y)).distance(click) <= PICK_RADIUS);
                 if near.is_some() {
                     self.selected = near;
-                } else if self.pending.is_none() {
+                } else if self.pending.is_none() && self.mode == WorkMode::Survey {
                     self.pending = Some(plan);
                     let _ = env.tx.send(Cmd::Survey { x: plan.x, y: plan.y });
                 }
@@ -1859,6 +2155,11 @@ impl FloorTab {
         let image = egui::ColorImage { size: [grid.w, grid.h], source_size: Vec2::new(grid.w as f32, grid.h as f32), pixels };
         self.heat_texture = Some(ctx.load_texture("heatmap", image, TextureOptions::LINEAR));
     }
+}
+
+/// Where the user's own access point models are kept.
+fn models_path() -> PathBuf {
+    store::config_dir().join("ap-models.json")
 }
 
 fn decode_texture(ctx: &egui::Context, bytes: &[u8], name: &str) -> Option<TextureHandle> {

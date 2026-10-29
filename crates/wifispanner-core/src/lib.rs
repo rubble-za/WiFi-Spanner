@@ -6,6 +6,7 @@
 //! Floors with survey points and walls, heatmap interpolation and the wall
 //! material table. The prediction engine arrives in a later phase.
 
+pub mod catalog;
 pub mod floors;
 pub mod heatmap;
 pub mod predict;

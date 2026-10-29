@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use eframe::egui;
 use wifispanner_core::heatmap::{self, ColorScheme, FAIR_DBM, GOOD_DBM, Grid, RAMP_MAX, RAMP_MIN, Sample};
-use wifispanner_core::survey::{Floor, MISSING_DBM, Observation, Project, SurveyPoint, Target, ap_key};
+use wifispanner_core::survey::{Floor, MISSING_DBM, Observation, Project, SurveyPoint, Target, ap_base_key, ap_key};
 use wifispanner_scan::Band;
 
 use crate::settings::Settings;
@@ -393,6 +393,10 @@ struct PlacedAp {
     width: u32,
     band: Band,
     best: f64,
+    /// Placed where the user plotted the installed access point, not estimated.
+    plotted: bool,
+    /// The name given to a plotted access point.
+    name: Option<String>,
 }
 
 /// Estimates where each physical AP is: the signal-weighted centre of the
@@ -437,7 +441,32 @@ fn place_aps(floor: &Floor, band: Band) -> Vec<PlacedAp> {
             width: s.best.width_mhz,
             band,
             best: s.readings[0].2,
+            plotted: false,
+            name: None,
         });
+    }
+    // Installed access points plotted on the plan stand where they really are:
+    // one linked to a measured access point replaces its estimate, and any
+    // other on this band is added as it is.
+    for plotted in floor.aps.iter().filter(|a| a.existing && a.radio(band).is_some()) {
+        let linked = plotted.link.as_ref().and_then(|key| out.iter_mut().find(|p| !p.plotted && ap_base_key(&p.bssid) == *key));
+        match linked {
+            Some(p) => {
+                (p.x, p.y, p.plotted, p.name) = (plotted.x, plotted.y, true, Some(plotted.name.clone()));
+            }
+            None => out.push(PlacedAp {
+                x: plotted.x,
+                y: plotted.y,
+                bssid: String::new(),
+                ssids: BTreeSet::new(),
+                channel: 0,
+                width: 0,
+                band,
+                best: f64::NEG_INFINITY,
+                plotted: true,
+                name: Some(plotted.name.clone()),
+            }),
+        }
     }
     out.sort_by(|a, b| b.best.total_cmp(&a.best));
     out
@@ -622,7 +651,7 @@ pub fn build_html(project: &Project, generated: &str, style: &ReportStyle, opts:
             let _ = write!(
                 fig,
                 "<circle cx=\"{}\" cy=\"{}\" r=\"{r}\" fill=\"#fff\" stroke=\"#1e5ac8\" stroke-width=\"{}\"/><text x=\"{}\" y=\"{}\" font-size=\"{}\" text-anchor=\"middle\" fill=\"#1e5ac8\" font-weight=\"700\" font-family=\"sans-serif\">{}</text>\
-                 <text x=\"{}\" y=\"{}\" font-size=\"{}\" text-anchor=\"middle\" fill=\"#1c1c1c\" stroke=\"#fff\" stroke-width=\"{}\" paint-order=\"stroke\" font-family=\"sans-serif\">ch {}/{}</text>",
+                 <text x=\"{}\" y=\"{}\" font-size=\"{}\" text-anchor=\"middle\" fill=\"#1c1c1c\" stroke=\"#fff\" stroke-width=\"{}\" paint-order=\"stroke\" font-family=\"sans-serif\">{}</text>",
                 ap.x,
                 ap.y,
                 marker_r / 4.0,
@@ -634,19 +663,23 @@ pub fn build_html(project: &Project, generated: &str, style: &ReportStyle, opts:
                 ap.y + r * 2.4,
                 marker_r * 1.4,
                 marker_r / 3.0,
-                ap.channel,
-                ap.width
+                if ap.channel == 0 { esc(ap.name.as_deref().unwrap_or("")) } else { format!("ch {}/{}", ap.channel, ap.width) }
             );
+            let ssids = ap.ssids.iter().cloned().collect::<Vec<_>>().join(", ");
             let _ = write!(
                 rows,
-                "<tr><td>{}</td><td><code>{}</code></td><td>{}</td><td>{}</td><td>{} MHz</td><td>{:.0} dBm</td><td>{}</td></tr>",
+                "<tr><td>{}</td><td><code>{}</code></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
                 i + 1,
-                esc(&ap.bssid),
-                esc(&ap.ssids.iter().cloned().collect::<Vec<_>>().join(", ")),
-                ap.channel,
-                ap.width,
-                ap.best,
-                esc(&position_xy(floor, ap.x, ap.y))
+                if ap.bssid.is_empty() { "not measured".to_string() } else { esc(&ap.bssid) },
+                esc(&match &ap.name {
+                    Some(n) if ssids.is_empty() => n.clone(),
+                    Some(n) => format!("{n}: {ssids}"),
+                    None => ssids,
+                }),
+                if ap.channel == 0 { "-".to_string() } else { ap.channel.to_string() },
+                if ap.width == 0 { "-".to_string() } else { format!("{} MHz", ap.width) },
+                if ap.best.is_finite() { format!("{:.0} dBm", ap.best) } else { "-".to_string() },
+                esc(&format!("{}{}", position_xy(floor, ap.x, ap.y), if ap.plotted { " (plotted)" } else { " (estimated)" }))
             );
         }
         fig.push_str("</svg></section>");
@@ -661,7 +694,7 @@ pub fn build_html(project: &Project, generated: &str, style: &ReportStyle, opts:
         toc.push(("placement".into(), "AP placement".into()));
         let _ = write!(
             body,
-            "<div class=\"sec\" id=\"placement\"><h2>AP placement</h2><p class=\"meta\">Estimated from signal strength alone: each access point sits at the signal-weighted centre of the three survey points that heard it best, so positions are approximate. Only access points heard at {PLACE_MIN_DBM:.0} dBm or stronger are placed. One entry per radio, however many SSIDs it broadcasts.</p>{placement}</div>"
+            "<div class=\"sec\" id=\"placement\"><h2>AP placement</h2><p class=\"meta\">Installed access points plotted on the plan are shown where they really are; the rest are estimated from signal strength alone, at the signal-weighted centre of the three survey points that heard them best, so those positions are approximate. Only access points heard at {PLACE_MIN_DBM:.0} dBm or stronger are placed. One entry per radio, however many SSIDs it broadcasts.</p>{placement}</div>"
         );
     }
 
@@ -960,6 +993,29 @@ mod tests {
         assert!(roof.contains("SSIDs: Roof") && roof.contains("<h1>Upper</h1>"));
         let dialog = OptionsDialog::new(std::path::PathBuf::new(), p);
         assert_eq!(dialog.floor, 1, "the active floor is offered first");
+    }
+
+    #[test]
+    fn plotted_access_points_replace_the_estimate_for_their_linked_radio() {
+        let mut p = project(vec![
+            at(5.0, vec![obs("aa:00:00:00:00:01", "A", 5180, -45.0)]),
+            at(30.0, vec![obs("aa:00:00:00:00:01", "A", 5180, -70.0)]),
+        ]);
+        let mut real = wifispanner_core::predict::PlannedAp::new("Reception".into(), 33.0, 12.0);
+        real.existing = true;
+        real.link = Some(ap_base_key("aa:00:00:00:00:01"));
+        let mut other = wifispanner_core::predict::PlannedAp::new("Store".into(), 2.0, 2.0);
+        other.existing = true;
+        let mut planned_only = wifispanner_core::predict::PlannedAp::new("Idea".into(), 9.0, 9.0);
+        planned_only.existing = false;
+        p.floor_mut().aps = vec![real, other, planned_only];
+        let aps = place_aps(p.floor(), Band::Ghz5);
+        assert_eq!(aps.len(), 2, "the estimate, replaced, plus the unlinked plotted one; planned ones are not in a survey report");
+        let linked = aps.iter().find(|a| !a.bssid.is_empty()).unwrap();
+        assert_eq!((linked.x, linked.y, linked.plotted), (33.0, 12.0, true));
+        assert!(aps.iter().any(|a| a.bssid.is_empty() && a.name.as_deref() == Some("Store")));
+        let out = html(&p);
+        assert!(out.contains("(plotted)") && out.contains("not measured"));
     }
 
     #[test]
