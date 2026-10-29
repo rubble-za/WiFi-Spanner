@@ -1465,30 +1465,54 @@ impl FloorTab {
         }
     }
 
-    /// A list of materials with their loss, as in the wall menu.
-    fn material_rows(&self, ui: &mut egui::Ui, current: Option<Material>, edits: &mut Vec<WallEdit>) {
+    /// A list of choices in two columns: name on the left, loss and a colour dot on
+    /// the right. Returns the index picked. Two columns keep long lists short enough
+    /// to show whole.
+    fn choice_rows(ui: &mut egui::Ui, rows: &[(String, String, Color32, bool)]) -> Option<usize> {
         let r = theme::roles(ui.ctx());
-        for m in Material::ALL {
-            let a = m.attenuation();
-            let db = match self.pred_band {
-                Band::Ghz2_4 => a.ghz2_4,
-                Band::Ghz5 => a.ghz5,
-                Band::Ghz6 => a.ghz6,
-            };
-            let ([cr, cg, cb], _) = m.style();
-            let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0 * theme::density(ui.ctx()).font_scale()), Sense::click());
-            if current == Some(m) {
-                ui.painter().rect_filled(rect, 8.0, r.secondary_container);
-            } else if resp.hovered() {
-                ui.painter().rect_filled(rect, 8.0, theme::state_layer(Color32::TRANSPARENT, r.on_surface, 0.08));
-            }
-            let font = egui::TextStyle::Body.resolve(ui.style());
-            ui.painter().text(rect.left_center() + Vec2::new(10.0, 0.0), egui::Align2::LEFT_CENTER, m.name(), font.clone(), r.on_surface);
-            ui.painter().circle_filled(rect.right_center() - Vec2::new(12.0, 0.0), 5.0, Color32::from_rgb(cr, cg, cb));
-            ui.painter().text(rect.right_center() - Vec2::new(26.0, 0.0), egui::Align2::RIGHT_CENTER, format!("{db:.0} dB"), font, r.on_surface_variant);
-            if resp.clicked() {
-                edits.push(WallEdit::Material(m));
-            }
+        let row_h = 28.0 * theme::density(ui.ctx()).font_scale();
+        let gap = ui.spacing().item_spacing.x;
+        let col_w = ((ui.available_width() - gap) / 2.0).floor();
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let mut picked = None;
+        for (pair_index, pair) in rows.chunks(2).enumerate() {
+            ui.horizontal(|ui| {
+                for (j, (name, detail, colour, selected)) in pair.iter().enumerate() {
+                    let (rect, resp) = ui.allocate_exact_size(Vec2::new(col_w, row_h), Sense::click());
+                    if *selected {
+                        ui.painter().rect_filled(rect, 8.0, r.secondary_container);
+                    } else if resp.hovered() {
+                        ui.painter().rect_filled(rect, 8.0, theme::state_layer(Color32::TRANSPARENT, r.on_surface, 0.08));
+                    }
+                    ui.painter().circle_filled(rect.left_center() + Vec2::new(12.0, 0.0), 5.0, *colour);
+                    ui.painter().text(rect.left_center() + Vec2::new(24.0, 0.0), egui::Align2::LEFT_CENTER, name, font.clone(), r.on_surface);
+                    ui.painter().text(rect.right_center() - Vec2::new(8.0, 0.0), egui::Align2::RIGHT_CENTER, detail, font.clone(), r.on_surface_variant);
+                    if resp.clicked() {
+                        picked = Some(pair_index * 2 + j);
+                    }
+                }
+            });
+        }
+        picked
+    }
+
+    /// The material list with each one's loss on the chosen band.
+    fn material_rows(&self, ui: &mut egui::Ui, current: Option<Material>, edits: &mut Vec<WallEdit>) {
+        let rows: Vec<(String, String, Color32, bool)> = Material::ALL
+            .iter()
+            .map(|&m| {
+                let a = m.attenuation();
+                let db = match self.pred_band {
+                    Band::Ghz2_4 => a.ghz2_4,
+                    Band::Ghz5 => a.ghz5,
+                    Band::Ghz6 => a.ghz6,
+                };
+                let [r, g, b] = m.style().0;
+                (m.name().to_string(), format!("{db:.0} dB"), Color32::from_rgb(r, g, b), current == Some(m))
+            })
+            .collect();
+        if let Some(i) = Self::choice_rows(ui, &rows) {
+            edits.push(WallEdit::Material(Material::ALL[i]));
         }
     }
 
@@ -1545,19 +1569,20 @@ impl FloorTab {
                     .inner_margin(10)
                     .shadow(theme::shadow(r.shadow, 16, 0.18))
                     .show(ui, |ui| {
-                        let room = (canvas.height() - right_top(ctx) - 28.0).max(160.0);
+                        // The most height there is, from the top of this menu to the bottom of the window.
+                        let top = canvas.top() + right_top(ctx);
+                        let room = (ctx.content_rect().bottom() - top - 28.0).max(160.0);
                         if self.tool == Tool::Aps {
-                            // The device list takes all the height there is.
                             ui.set_width(300.0);
                             self.devices_content(ui, floor, room, &mut aps_out);
                             return;
                         }
-                        ui.set_width(250.0);
-                        // Long menus scroll rather than run off the window.
-                        egui::ScrollArea::vertical().max_height((room - 12.0).max(if self.tool == Tool::Client { 260.0 } else { 160.0 })).show(ui, |ui| match self.tool {
+                        // The lists of materials and kinds are in two columns, so those menus are wider.
+                        ui.set_width(if self.tool == Tool::Client { 250.0 } else { 400.0 });
+                        // A menu always shows whole; it only scrolls if the window is too short for it.
+                        egui::ScrollArea::vertical().id_salt(("right_panel", self.tool as u8)).max_height(room).auto_shrink([false, true]).show(ui, |ui| match self.tool {
                             Tool::Walls => self.walls_content(ui, floor, &mut walls_out),
                             Tool::Select => self.select_content(ui, floor, &mut walls_out, &mut aps_out),
-                            Tool::Aps => {}
                             Tool::Obstacles => self.obstacles_content(ui, floor, &mut walls_out),
                             Tool::Client => self.client_content(ui, floor, &mut walls_out),
                             _ => {}
@@ -1644,22 +1669,15 @@ impl FloorTab {
 
     /// Obstacle kinds with their loss per metre.
     fn kind_rows(&self, ui: &mut egui::Ui, current: Option<ObstacleKind>, edits: &mut Vec<WallEdit>) {
-        let r = theme::roles(ui.ctx());
-        for k in ObstacleKind::ALL {
-            let [cr, cg, cb] = k.colour();
-            let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0 * theme::density(ui.ctx()).font_scale()), Sense::click());
-            if current == Some(k) {
-                ui.painter().rect_filled(rect, 8.0, r.secondary_container);
-            } else if resp.hovered() {
-                ui.painter().rect_filled(rect, 8.0, theme::state_layer(Color32::TRANSPARENT, r.on_surface, 0.08));
-            }
-            let font = egui::TextStyle::Body.resolve(ui.style());
-            ui.painter().text(rect.left_center() + Vec2::new(10.0, 0.0), egui::Align2::LEFT_CENTER, k.name(), font.clone(), r.on_surface);
-            ui.painter().circle_filled(rect.right_center() - Vec2::new(12.0, 0.0), 5.0, Color32::from_rgb(cr, cg, cb));
-            ui.painter().text(rect.right_center() - Vec2::new(26.0, 0.0), egui::Align2::RIGHT_CENTER, format!("{:.0} dB/m", k.db_per_m()), font, r.on_surface_variant);
-            if resp.clicked() {
-                edits.push(WallEdit::AreaKind(k));
-            }
+        let rows: Vec<(String, String, Color32, bool)> = ObstacleKind::ALL
+            .iter()
+            .map(|&k| {
+                let [r, g, b] = k.colour();
+                (k.name().to_string(), format!("{:.0} dB/m", k.db_per_m()), Color32::from_rgb(r, g, b), current == Some(k))
+            })
+            .collect();
+        if let Some(i) = Self::choice_rows(ui, &rows) {
+            edits.push(WallEdit::AreaKind(ObstacleKind::ALL[i]));
         }
     }
 
@@ -1816,8 +1834,9 @@ impl FloorTab {
             edits.push(ApEdit::Template(None));
         }
         // Below the title, counts, hint, search and the custom row.
-        let list_height = (room - 150.0).max(120.0);
-        egui::ScrollArea::vertical().max_height(list_height).auto_shrink([false, false]).show(ui, |ui| {
+        let row_h = 28.0 * theme::density(ui.ctx()).font_scale() + ui.spacing().item_spacing.y;
+        let list_height = (7.0 * row_h).min((room - 150.0).max(2.0 * row_h));
+        egui::ScrollArea::vertical().max_height(list_height).auto_shrink([false, true]).show(ui, |ui| {
             for m in catalog::search(&self.models, &self.model_search) {
                 let on = current.as_deref() == Some(m.id().as_str());
                 let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0 * theme::density(ui.ctx()).font_scale()), Sense::click());
