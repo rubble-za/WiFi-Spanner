@@ -203,7 +203,7 @@ fn visuals(r: &Roles, dark: bool) -> egui::Visuals {
     v.window_shadow = shadow(r.shadow, 24, 0.20);
     v.popup_shadow = shadow(r.shadow, 14, 0.22);
     v.selection.bg_fill = r.primary_container;
-    v.selection.stroke = Stroke::new(1.0, r.primary);
+    v.selection.stroke = Stroke::new(2.0, r.primary); // also the keyboard focus ring
     v.text_cursor.stroke = Stroke::new(2.0, r.primary);
     v.slider_trailing_fill = true;
     v.handle_shape = egui::style::HandleShape::Circle;
@@ -298,6 +298,98 @@ pub fn button(ui: &mut egui::Ui, kind: ButtonKind, icon: Option<egui_material_ic
         ui.add(egui::Button::new(job).corner_radius(20).min_size(egui::vec2(64.0, 40.0)).wrap_mode(egui::TextWrapMode::Extend))
     })
     .inner
+}
+
+/// Text with an optional leading Material icon, for menu entries. With no icon
+/// the label is indented by the icon's width so a menu's labels line up.
+pub fn icon_label(ui: &egui::Ui, icon: Option<egui_material_icons::MaterialIcon>, label: &str) -> egui::text::LayoutJob {
+    let color = ui.visuals().text_color();
+    let body = TextStyle::Body.resolve(ui.style());
+    let mut job = egui::text::LayoutJob::default();
+    match icon {
+        Some(icon) => {
+            job.append(icon.codepoint, 0.0, egui::TextFormat::simple(FontId::new(20.0, icon.font_family()), color));
+            job.append(label, 12.0, egui::TextFormat::simple(body, color));
+        }
+        None => job.append(label, 32.0, egui::TextFormat::simple(body, color)),
+    }
+    job
+}
+
+/// A Material chip (8 dp corners): outlined at rest, filled with a check mark
+/// when selected. Use a row of them for a choice among a few options.
+pub fn chip(ui: &mut egui::Ui, selected: bool, icon: Option<egui_material_icons::MaterialIcon>, label: &str) -> egui::Response {
+    let r = roles(ui.ctx());
+    ui.scope(|ui| {
+        let v = ui.visuals_mut();
+        let (fill, fg, stroke) = if selected {
+            (r.secondary_container, r.on_secondary_container, Stroke::NONE)
+        } else {
+            (Color32::TRANSPARENT, r.on_surface_variant, Stroke::new(1.0, r.outline))
+        };
+        let layer = |opacity: f32| if selected { state_layer(fill, fg, opacity) } else { r.on_surface.gamma_multiply(opacity) };
+        for (w, fill) in [(&mut v.widgets.inactive, fill), (&mut v.widgets.hovered, layer(0.08)), (&mut v.widgets.active, layer(0.12))] {
+            w.weak_bg_fill = fill;
+            w.bg_fill = fill;
+            w.bg_stroke = stroke;
+            w.fg_stroke = Stroke::new(1.0, fg);
+            w.expansion = 0.0;
+        }
+        let icon = if selected { Some(egui_material_icons::icons::ICON_CHECK) } else { icon };
+        let font = TextStyle::Button.resolve(ui.style());
+        let mut job = egui::text::LayoutJob::default();
+        if let Some(icon) = icon {
+            job.append(icon.codepoint, 0.0, egui::TextFormat::simple(FontId::new(18.0, icon.font_family()), fg));
+            job.append(label, 8.0, egui::TextFormat::simple(font, fg));
+        } else {
+            job.append(label, 0.0, egui::TextFormat::simple(font, fg));
+        }
+        ui.add(egui::Button::new(job).corner_radius(8).min_size(egui::vec2(48.0, 32.0)).wrap_mode(egui::TextWrapMode::Extend))
+    })
+    .inner
+}
+
+/// A Material snackbar: a short message near the bottom of the window.
+/// Returns true when the user clicks it away.
+pub fn snackbar(ctx: &egui::Context, text: &str) -> bool {
+    let r = roles(ctx);
+    egui::Area::new(egui::Id::unique("snackbar"))
+        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -48.0))
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            let frame = egui::Frame::new()
+                .fill(r.inverse_surface)
+                .corner_radius(8)
+                .inner_margin(egui::Margin::symmetric(20, 14))
+                .shadow(shadow(r.shadow, 14, 0.25));
+            let shown = frame.show(ui, |ui| {
+                ui.set_max_width(520.0);
+                ui.label(egui::RichText::new(text).color(r.inverse_on_surface));
+            });
+            ui.interact(shown.response.rect, egui::Id::unique("snackbar-dismiss"), egui::Sense::click()).clicked()
+        })
+        .inner
+}
+
+/// A centred empty state: a large icon, a headline, a sentence, and actions.
+pub fn empty_state(
+    ui: &mut egui::Ui,
+    icon: egui_material_icons::MaterialIcon,
+    headline: &str,
+    body: &str,
+    actions: impl FnOnce(&mut egui::Ui),
+) {
+    let r = roles(ui.ctx());
+    ui.vertical_centered(|ui| {
+        ui.add_space((ui.available_height() * 0.25).max(24.0));
+        ui.label(icon.rich_text().size(64.0).color(r.outline));
+        ui.add_space(8.0);
+        ui.label(egui::RichText::new(headline).size(22.0).color(r.on_surface));
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new(body).color(r.on_surface_variant));
+        ui.add_space(16.0);
+        actions(ui);
+    });
 }
 
 /// A Material switch (52 x 32 track, thumb that grows when on).
@@ -476,6 +568,11 @@ mod tests {
             assert!(ratio(r.primary, r.surface_container_high) >= 4.5, "{theme:?} text buttons in dialogs");
             assert!(ratio(r.primary, r.secondary_container) >= 3.0, "{theme:?} text buttons in the update banner");
             assert!(ratio(r.on_surface_variant, r.surface) >= 4.5, "{theme:?} table headers and hints");
+            assert!(ratio(r.on_surface_variant, r.surface_container_high) >= 4.5, "{theme:?} hints in dialogs");
+            assert!(ratio(r.error, r.surface_container_high) >= 4.5, "{theme:?} error text in dialogs");
+            assert!(ratio(r.error, r.surface) >= 4.5, "{theme:?} error text on pages");
+            assert!(ratio(r.inverse_on_surface, r.inverse_surface) >= 7.0, "{theme:?} snackbar text");
+            assert!(ratio(r.on_surface_variant, r.surface_container) >= 4.5, "{theme:?} status bar text");
         }
     }
 

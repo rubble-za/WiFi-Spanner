@@ -84,7 +84,9 @@ fn general(ui: &mut egui::Ui, s: &mut Settings, launcher: &mut LauncherView) {
     ui.label(crate::theme::medium("Appearance"));
     ui.horizontal(|ui| {
         for mode in crate::theme::ThemeMode::ALL {
-            ui.selectable_value(&mut s.theme_mode, mode, mode.name());
+            if crate::theme::chip(ui, s.theme_mode == mode, None, mode.name()).clicked() {
+                s.theme_mode = mode;
+            }
         }
     });
     ui.add_space(14.0);

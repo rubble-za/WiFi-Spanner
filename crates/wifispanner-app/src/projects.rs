@@ -65,9 +65,20 @@ pub struct ProjectsTab {
     reports: Vec<store::ReportFile>,
     reports_of: Option<PathBuf>,
     status: String,
+    /// The last status shown as a snackbar, to spot changes.
+    toasted: String,
 }
 
 impl ProjectsTab {
+    /// A new status message since the last call, for a snackbar.
+    pub fn take_toast(&mut self) -> Option<String> {
+        if self.status == self.toasted {
+            return None;
+        }
+        self.toasted = self.status.clone();
+        (!self.status.is_empty()).then(|| self.status.clone())
+    }
+
     pub fn refresh(&mut self) {
         let mut entries = Vec::new();
         let mut cache = HashMap::new();

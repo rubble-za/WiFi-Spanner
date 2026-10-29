@@ -14,7 +14,7 @@ use wifispanner_scan::{Band, ScanResult};
 
 use crate::settings::Settings;
 use crate::theme::{self, ButtonKind};
-use egui_material_icons::icons::{ICON_DELETE, ICON_DESCRIPTION, ICON_FOLDER_OPEN, ICON_IMAGE, ICON_SAVE};
+use egui_material_icons::icons::{ICON_DELETE, ICON_DESCRIPTION, ICON_FOLDER_OPEN, ICON_IMAGE, ICON_PLACE, ICON_SAVE, ICON_STRAIGHTEN};
 use crate::{Cmd, pdf, report, store};
 use crate::live::signal_color;
 
@@ -80,6 +80,8 @@ pub struct FloorTab {
     heat_texture: Option<TextureHandle>,
     heat_dirty: bool,
     status: String,
+    /// The last status shown as a snackbar, to spot changes.
+    toasted: String,
     /// Display settings from the settings dialog, copied in each frame.
     view: Settings,
     pdf_picker: Option<PdfPicker>,
@@ -116,6 +118,7 @@ impl Default for FloorTab {
             heat_texture: None,
             heat_dirty: true,
             status: "Open a floor plan image to begin.".into(),
+            toasted: "Open a floor plan image to begin.".into(),
             view: Settings::default(),
             pdf_picker: None,
         }
@@ -132,6 +135,15 @@ impl FloorTab {
         self.selected = Some(p.floor.points.len() - 1);
         self.heat_dirty = true;
         self.autosave();
+    }
+
+    /// A new status message since the last call, for a snackbar.
+    pub fn take_toast(&mut self) -> Option<String> {
+        if self.status == self.toasted {
+            return None;
+        }
+        self.toasted = self.status.clone();
+        (!self.status.is_empty()).then(|| self.status.clone())
     }
 
     pub fn scan_failed(&mut self) {
@@ -360,8 +372,11 @@ impl FloorTab {
             });
             ui.separator();
             ui.add_enabled_ui(self.project.is_some(), |ui| {
-                ui.selectable_value(&mut self.tool, Tool::Survey, "Survey point");
-                if ui.selectable_value(&mut self.tool, Tool::Scale, "Set scale").clicked() {
+                if theme::chip(ui, self.tool == Tool::Survey, Some(ICON_PLACE), "Survey point").clicked() {
+                    self.tool = Tool::Survey;
+                }
+                if theme::chip(ui, self.tool == Tool::Scale, Some(ICON_STRAIGHTEN), "Set scale").clicked() {
+                    self.tool = Tool::Scale;
                     self.scale_clicks.clear();
                 }
             });
@@ -369,13 +384,13 @@ impl FloorTab {
                 ui.separator();
                 match f.metres_per_px {
                     Some(m) if !heatmap::scale_is_plausible(m, f.width_px, f.height_px) => ui
-                        .colored_label(theme::roles(ui.ctx()).error, "Scale looks wrong")
+                        .add(egui::Label::new(egui::RichText::new("Scale looks wrong").color(theme::roles(ui.ctx()).error)).wrap_mode(egui::TextWrapMode::Extend))
                         .on_hover_text(format!(
                             "The scale makes this plan {:.0} m across. Choose Set scale and click two points a known distance apart to redo it.",
                             f.width_px.max(f.height_px) as f32 * m
                         )),
-                    Some(m) => ui.label(format!("Scale: {:.1} px/m", 1.0 / m)),
-                    None => ui.colored_label(Color32::from_rgb(240, 140, 50), "Scale not set"),
+                    Some(m) => ui.add(egui::Label::new(format!("Scale: {:.1} px/m", 1.0 / m)).wrap_mode(egui::TextWrapMode::Extend)),
+                    None => ui.add(egui::Label::new(egui::RichText::new("Scale not set").color(Color32::from_rgb(240, 140, 50))).wrap_mode(egui::TextWrapMode::Extend)),
                 };
             }
         });
@@ -521,7 +536,16 @@ impl FloorTab {
 
     fn canvas(&mut self, ui: &mut egui::Ui, env: &Env) {
         let (Some(project), Some(tex)) = (self.project.as_ref(), self.texture.clone()) else {
-            ui.centered_and_justified(|ui| ui.label("Open a floor plan image to begin."));
+            let ctx = ui.ctx().clone();
+            theme::empty_state(ui, ICON_IMAGE, "No floor plan yet", "Open a floor plan or a saved project to start surveying.", |ui| {
+                if theme::button(ui, ButtonKind::Filled, Some(ICON_IMAGE), "Open floor plan").clicked() {
+                    self.pick_plan(&ctx);
+                }
+                ui.add_space(8.0);
+                if theme::button(ui, ButtonKind::Tonal, Some(ICON_FOLDER_OPEN), "Open project").clicked() {
+                    self.pick_project(&ctx);
+                }
+            });
             return;
         };
         let (img_w, img_h) = (project.floor.width_px as f32, project.floor.height_px as f32);

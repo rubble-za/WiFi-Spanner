@@ -23,7 +23,10 @@ use std::time::Duration;
 use eframe::egui;
 use settings::Settings;
 use theme::ButtonKind;
-use egui_material_icons::icons::{ICON_CLOSE, ICON_SYSTEM_UPDATE};
+use egui_material_icons::icons::{
+    ICON_CHECK, ICON_CLOSE, ICON_FOLDER, ICON_FOLDER_OPEN, ICON_IMAGE, ICON_INFO, ICON_POWER_SETTINGS_NEW, ICON_REFRESH, ICON_SETTINGS,
+    ICON_SYSTEM_UPDATE, ICON_WIFI,
+};
 use wifispanner_scan::dwell::scan_for_many;
 use wifispanner_scan::iw::WifiCard;
 use wifispanner_scan::{ScanResult, Scanner, default_scanner, list_cards};
@@ -45,6 +48,8 @@ const TAGLINE: &str = "Your one-stop WiFi Scanner and Planner";
 
 /// Height of the top bar, about twice egui's default for easier touch use.
 const BAR_ROW_HEIGHT: f32 = 48.0;
+/// How long a snackbar message stays.
+const TOAST_FOR: Duration = Duration::from_secs(5);
 
 fn main() -> eframe::Result {
     // The window opens at its final size, so the desktop places it on screen
@@ -233,6 +238,8 @@ struct App {
     launcher_prompt: bool,
     launcher_message: String,
     window: WindowSizing,
+    /// A short message shown as a snackbar, and when it appeared.
+    toast: Option<(String, std::time::Instant)>,
     settings_section: settings_ui::Section,
     logo: Option<egui::TextureHandle>,
     /// Set while the splash is showing.
@@ -276,6 +283,7 @@ impl App {
             launcher_prompt: false,
             launcher_message: String::new(),
             window: WindowSizing::default(),
+            toast: None,
             settings_section: settings_ui::Section::default(),
             logo: logo_texture(&ctx_for_logo),
             splash_since: Some(std::time::Instant::now()),
@@ -316,28 +324,32 @@ impl App {
         ui.set_min_width(230.0);
         ui.spacing_mut().interact_size.y = 34.0;
         ui.spacing_mut().button_padding = egui::vec2(12.0, 6.0);
-        ui.menu_button("File", |ui| {
-            if ui.button("Open floor plan...").clicked() {
+        let label = |ui: &egui::Ui, icon, text: &str| theme::icon_label(ui, icon, text);
+        ui.menu_button(label(ui, Some(ICON_FOLDER), "File"), |ui| {
+            if ui.button(label(ui, Some(ICON_IMAGE), "Open floor plan...")).clicked() {
                 *action = Some(MenuAction::OpenPlan);
             }
-            if ui.button("Open project...").clicked() {
+            if ui.button(label(ui, Some(ICON_FOLDER_OPEN), "Open project...")).clicked() {
                 *action = Some(MenuAction::OpenProject);
             }
             ui.separator();
-            if ui.button("Show projects folder").clicked() {
+            if ui.button(label(ui, Some(ICON_FOLDER), "Show projects folder")).clicked() {
                 *action = Some(MenuAction::ShowProjectsFolder);
             }
         });
-        if ui.button("Settings...").clicked() {
+        if ui.button(label(ui, Some(ICON_SETTINGS), "Settings...")).clicked() {
             self.settings_open = true;
         }
-        ui.menu_button("Adapters", |ui| {
+        ui.menu_button(label(ui, Some(ICON_WIFI), "Adapters"), |ui| {
             let before = self.settings.card.clone();
-            if ui.selectable_label(before.is_none(), "Auto (connected card)").clicked() {
+            let auto = theme::icon_label(ui, before.is_none().then_some(ICON_CHECK), "Auto (connected card)");
+            if ui.selectable_label(before.is_none(), auto).clicked() {
                 self.settings.card = None;
             }
             for c in &self.cards {
-                if ui.selectable_label(before.as_ref() == Some(&c.name), c.label()).clicked() {
+                let selected = before.as_ref() == Some(&c.name);
+                let text = theme::icon_label(ui, selected.then_some(ICON_CHECK), &c.label());
+                if ui.selectable_label(selected, text).clicked() {
                     self.settings.card = Some(c.name.clone());
                 }
             }
@@ -345,7 +357,7 @@ impl App {
                 ui.label("No Wi-Fi cards found");
             }
             ui.separator();
-            let refresh = ui.button("Refresh cards").clicked();
+            let refresh = ui.button(label(ui, Some(ICON_REFRESH), "Refresh cards")).clicked();
             if refresh {
                 self.cards = list_cards().unwrap_or_default();
             }
@@ -354,14 +366,14 @@ impl App {
             }
         });
         ui.separator();
-        if ui.button("Check for updates").clicked() {
+        if ui.button(label(ui, Some(ICON_SYSTEM_UPDATE), "Check for updates")).clicked() {
             *action = Some(MenuAction::CheckUpdates);
         }
-        if ui.button("About...").clicked() {
+        if ui.button(label(ui, Some(ICON_INFO), "About...")).clicked() {
             self.about_open = true;
         }
         ui.separator();
-        if ui.button("Quit").clicked() {
+        if ui.button(label(ui, Some(ICON_POWER_SETTINGS_NEW), "Quit")).clicked() {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
@@ -587,6 +599,27 @@ impl App {
         });
         if close {
             self.update_message = None;
+        }
+    }
+
+    /// Show messages from the tabs as a snackbar for a few seconds.
+    fn toast_tick(&mut self, ctx: &egui::Context) {
+        let new = match self.tab {
+            Tab::Floor => self.floor.take_toast(),
+            Tab::Projects => self.projects.take_toast(),
+            Tab::Live => None,
+        };
+        if let Some(text) = new {
+            self.toast = Some((text, std::time::Instant::now()));
+        }
+        let Some((text, at)) = &self.toast else { return };
+        if at.elapsed() >= TOAST_FOR {
+            self.toast = None;
+            return;
+        }
+        ctx.request_repaint_after(Duration::from_millis(250));
+        if theme::snackbar(ctx, text) {
+            self.toast = None;
         }
     }
 
@@ -887,6 +920,7 @@ impl eframe::App for App {
         self.update_message_window(ui.ctx());
         self.install_window(ui.ctx());
         self.launcher_prompt_window(ui.ctx());
+        self.toast_tick(ui.ctx());
 
         // Slim status bar at egui's default height, so it only fits its text.
         let status_frame = egui::Frame::new().fill(roles.surface_container).inner_margin(egui::Margin::symmetric(12, 4));
