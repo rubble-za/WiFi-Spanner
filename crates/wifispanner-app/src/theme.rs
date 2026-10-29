@@ -1044,6 +1044,9 @@ pub fn icon_label(ui: &egui::Ui, icon: Option<egui_material_icons::MaterialIcon>
 /// A Material snackbar: a short message near the bottom of the window.
 /// Returns true when the user clicks it away.
 pub fn snackbar(ctx: &egui::Context, text: &str) -> bool {
+    if skin(ctx) == Skin::Carbon {
+        return toast(ctx, text);
+    }
     let r = roles(ctx);
     egui::Area::new(egui::Id::unique("snackbar"))
         .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -48.0))
@@ -1061,6 +1064,118 @@ pub fn snackbar(ctx: &egui::Context, text: &str) -> bool {
             ui.interact(shown.response.rect, egui::Id::unique("snackbar-dismiss"), egui::Sense::click()).clicked()
         })
         .inner
+}
+
+/// What a message is about, for the colour of Carbon's toast: guessed from its wording.
+fn toast_kind(text: &str) -> (&'static str, Color32) {
+    let lower = text.to_lowercase();
+    if ["could not", "failed", "error", "cannot", "no survey"].iter().any(|w| lower.contains(w)) {
+        ("Error", Color32::from_rgb(0xda, 0x1e, 0x28))
+    } else if ["saved", "added", "set.", "opened", "installed", "up to date"].iter().any(|w| lower.contains(w)) {
+        ("Success", Color32::from_rgb(0x24, 0xa1, 0x48))
+    } else {
+        ("Notice", Color32::from_rgb(0x45, 0x89, 0xff))
+    }
+}
+
+/// Carbon's toast notification: top right, an inverse-coloured box with a 3 px bar in the
+/// colour of its kind, a title, the message and a close button. Returns true when dismissed.
+fn toast(ctx: &egui::Context, text: &str) -> bool {
+    let r = roles(ctx);
+    let (title, accent) = toast_kind(text);
+    egui::Area::new(egui::Id::unique("toast"))
+        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-16.0, 64.0))
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            let frame = egui::Frame::new()
+                .fill(r.inverse_surface)
+                .inner_margin(egui::Margin { left: 19, right: 12, top: 14, bottom: 14 })
+                .shadow(shadow(r.shadow, 10, 0.30));
+            let shown = frame.show(ui, |ui| {
+                ui.set_width(300.0);
+                let mut close = false;
+                ui.horizontal_top(|ui| {
+                    ui.vertical(|ui| {
+                        ui.set_width(252.0);
+                        ui.label(medium(title).color(r.inverse_on_surface));
+                        ui.add_space(2.0);
+                        ui.label(egui::RichText::new(text).color(r.inverse_on_surface));
+                    });
+                    let (rect, resp) = ui.allocate_exact_size(egui::Vec2::splat(24.0), egui::Sense::click());
+                    if resp.hovered() {
+                        ui.painter().rect_filled(rect, 0.0, r.inverse_on_surface.gamma_multiply(0.12));
+                    }
+                    paint_icon(ui.painter(), ui.ctx(), egui_material_icons::icons::ICON_CLOSE, rect.center(), 18.0, r.inverse_on_surface);
+                    close = resp.on_hover_text("Close").clicked();
+                });
+                close
+            });
+            let rect = shown.response.rect;
+            ui.painter().rect_filled(egui::Rect::from_min_max(rect.left_top(), egui::pos2(rect.left() + 3.0, rect.bottom())), 0.0, accent);
+            shown.inner
+        })
+        .inner
+}
+
+/// One cell of a [`data_table`]: in Carbon's rows the content is centred in the row's height.
+pub fn cell<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    if skin(ui.ctx()) != Skin::Carbon {
+        return add(ui);
+    }
+    let row_h = density(ui.ctx()).row_height();
+    ui.horizontal(|ui| {
+        ui.set_min_height(row_h);
+        add(ui)
+    })
+    .inner
+}
+
+/// A table with a header row, then whatever `body` lays out (it must `end_row` after each row, and
+/// use [`cell`] for each cell). Material's is a striped grid. Carbon's has a tinted header,
+/// rows on a layer with thin dividers, and a highlight under the pointer.
+pub fn data_table(ui: &mut egui::Ui, id: &str, header: &[&str], gap: f32, body: impl FnOnce(&mut egui::Ui)) {
+    let r = roles(ui.ctx());
+    if skin(ui.ctx()) != Skin::Carbon {
+        egui::Grid::new(id).striped(true).num_columns(header.len()).spacing([gap, ui.spacing().item_spacing.y * 0.5]).show(ui, |ui| {
+            for h in header {
+                ui.label(medium(*h).color(r.on_surface_variant));
+            }
+            ui.end_row();
+            body(ui);
+        });
+        return;
+    }
+    let dark = ui.ctx().theme() == egui::Theme::Dark;
+    let (accent, hover, divider) = if dark {
+        (Color32::from_rgb(0x39, 0x39, 0x39), Color32::from_rgb(0x33, 0x33, 0x33), Color32::from_rgb(0x39, 0x39, 0x39))
+    } else {
+        (Color32::from_rgb(0xe0, 0xe0, 0xe0), Color32::from_rgb(0xe8, 0xe8, 0xe8), Color32::from_rgb(0xe0, 0xe0, 0xe0))
+    };
+    let row_h = density(ui.ctx()).row_height();
+    let behind = ui.painter().add(egui::Shape::Noop);
+    let shown = egui::Grid::new(id).min_row_height(row_h).spacing([gap + 16.0, 0.0]).show(ui, |ui| {
+        for h in header {
+            cell(ui, |ui| ui.label(medium(*h).color(r.on_surface)));
+        }
+        ui.end_row();
+        body(ui);
+    });
+    // The header band, the layer under the rows, the dividers and the hovered row, drawn behind the cells.
+    let rect = shown.response.rect.expand2(egui::vec2(12.0, 0.0));
+    let rows = (rect.height() / row_h).round().max(1.0) as usize;
+    let mut shapes = vec![egui::Shape::rect_filled(rect, 0.0, r.surface_container)];
+    shapes.push(egui::Shape::rect_filled(egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), row_h)), 0.0, accent));
+    if let Some(p) = ui.input(|i| i.pointer.hover_pos()).filter(|p| rect.contains(*p)) {
+        let row = ((p.y - rect.top()) / row_h) as usize;
+        if row >= 1 && row < rows {
+            shapes.push(egui::Shape::rect_filled(egui::Rect::from_min_size(egui::pos2(rect.left(), rect.top() + row as f32 * row_h), egui::vec2(rect.width(), row_h)), 0.0, hover));
+        }
+    }
+    for i in 1..=rows {
+        let y = rect.top() + i as f32 * row_h - 0.5;
+        shapes.push(egui::Shape::line_segment([egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)], Stroke::new(1.0, divider)));
+    }
+    ui.painter().set(behind, egui::Shape::Vec(shapes));
 }
 
 /// A centred empty state: a large icon, a headline, a sentence, and actions.

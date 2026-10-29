@@ -15,35 +15,29 @@ pub fn show(ui: &mut egui::Ui, latest: Option<&ScanResult>) {
     nets.sort_by(|a, b| b.signal_dbm.partial_cmp(&a.signal_dbm).unwrap_or(std::cmp::Ordering::Equal));
 
     egui::ScrollArea::both().show(ui, |ui| {
-        egui::Grid::new("networks").striped(true).num_columns(10).spacing([16.0, ui.spacing().item_spacing.y * 0.5]).show(ui, |ui| {
-            let header = crate::theme::roles(ui.ctx()).on_surface_variant;
-            for h in ["SSID", "BSSID", "Ch", "Band", "Width", "Standard", "Security", "Signal", "Seen", "Util"] {
-                ui.label(crate::theme::medium(h).color(header));
-            }
-            ui.end_row();
+        crate::theme::data_table(ui, "networks", &["SSID", "BSSID", "Ch", "Band", "Width", "Standard", "Security", "Signal", "Seen", "Util"], 16.0, |ui| {
+            use crate::theme::cell;
             for n in nets {
                 let ssid = n.ssid.as_deref().unwrap_or("<hidden>");
-                if n.associated {
-                    ui.strong(format!("{ssid} (connected)"));
-                } else {
-                    ui.label(ssid);
-                }
-                ui.monospace(&n.bssid);
-                ui.label(n.channel.to_string());
-                ui.label(n.band.to_string());
-                ui.label(format!("{} MHz", n.width_mhz));
-                ui.label(n.standard.to_string());
-                ui.label(n.security.to_string());
-                match n.signal_dbm {
-                    Some(s) => {
-                        ui.colored_label(signal_color(s, ui.visuals().dark_mode), format!("{s:.0} dBm"));
+                cell(ui, |ui| {
+                    if n.associated {
+                        ui.strong(format!("{ssid} (connected)"));
+                    } else {
+                        ui.label(ssid);
                     }
-                    None => {
-                        ui.label("-");
-                    }
-                }
-                ui.label(if n.samples == 0 { "stale".to_string() } else { n.samples.to_string() });
-                ui.label(n.channel_util_pct.map_or("-".into(), |u| format!("{u:.0}%")));
+                });
+                cell(ui, |ui| ui.monospace(&n.bssid));
+                cell(ui, |ui| ui.label(n.channel.to_string()));
+                cell(ui, |ui| ui.label(n.band.to_string()));
+                cell(ui, |ui| ui.label(format!("{} MHz", n.width_mhz)));
+                cell(ui, |ui| ui.label(n.standard.to_string()));
+                cell(ui, |ui| ui.label(n.security.to_string()));
+                cell(ui, |ui| match n.signal_dbm {
+                    Some(s) => ui.colored_label(signal_color(s, ui.visuals().dark_mode), format!("{s:.0} dBm")),
+                    None => ui.label("-"),
+                });
+                cell(ui, |ui| ui.label(if n.samples == 0 { "stale".to_string() } else { n.samples.to_string() }));
+                cell(ui, |ui| ui.label(n.channel_util_pct.map_or("-".into(), |u| format!("{u:.0}%"))));
                 ui.end_row();
             }
         });

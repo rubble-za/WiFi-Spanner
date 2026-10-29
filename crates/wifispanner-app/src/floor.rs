@@ -2328,17 +2328,13 @@ impl FloorTab {
                         let mut obs: Vec<_> = p.observations.iter().collect();
                         obs.sort_by(|a, b| b.signal_dbm.total_cmp(&a.signal_dbm));
                         egui::ScrollArea::vertical().id_salt("obs").max_height(260.0).show(ui, |ui| {
-                            egui::Grid::new("obs_grid").striped(true).spacing([10.0, 3.0]).show(ui, |ui| {
-                                for h in ["SSID", "Ch", "Band", "dBm", "Seen"] {
-                                    ui.strong(h);
-                                }
-                                ui.end_row();
+                            theme::data_table(ui, "obs_grid", &["SSID", "Ch", "Band", "dBm", "Seen"], 10.0, |ui| {
                                 for o in obs {
-                                    ui.label(o.ssid.as_deref().unwrap_or("<hidden>"));
-                                    ui.label(o.channel.to_string());
-                                    ui.label(o.band().to_string());
-                                    ui.colored_label(signal_color(o.signal_dbm, ui.visuals().dark_mode), format!("{:.0}", o.signal_dbm));
-                                    ui.label(o.samples.to_string());
+                                    theme::cell(ui, |ui| ui.label(o.ssid.as_deref().unwrap_or("<hidden>")));
+                                    theme::cell(ui, |ui| ui.label(o.channel.to_string()));
+                                    theme::cell(ui, |ui| ui.label(o.band().to_string()));
+                                    theme::cell(ui, |ui| ui.colored_label(signal_color(o.signal_dbm, ui.visuals().dark_mode), format!("{:.0}", o.signal_dbm)));
+                                    theme::cell(ui, |ui| ui.label(o.samples.to_string()));
                                     ui.end_row();
                                 }
                             });
