@@ -12,18 +12,18 @@ use crate::settings::{DWELLS, MarkerSize, SIGNAL_CEIL, SIGNAL_FLOOR, Settings};
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum Section {
     #[default]
+    General,
     Scanner,
     Survey,
     Heatmap,
-    General,
 }
 
 impl Section {
     const ALL: [(Section, &'static str); 4] = [
+        (Section::General, "General"),
         (Section::Scanner, "Scanner"),
         (Section::Survey, "Survey"),
         (Section::Heatmap, "Heatmap"),
-        (Section::General, "General"),
     ];
 }
 
@@ -92,13 +92,14 @@ fn general(ui: &mut egui::Ui, s: &mut Settings, launcher: &mut LauncherView) {
     ui.add_space(14.0);
     ui.label(crate::theme::medium("Design"));
     ui.weak("The same layouts in two looks, to compare: Material Design or IBM Carbon.");
-    ui.horizontal(|ui| {
-        for skin in crate::theme::Skin::ALL {
-            if crate::theme::chip(ui, s.design == skin, None, skin.name()).clicked() {
-                s.design = skin;
+    crate::theme::dropdown(
+        egui::ComboBox::from_id_salt("design").selected_text(s.design.name()).width(220.0).show_ui(ui, |ui| {
+            for skin in crate::theme::Skin::ALL {
+                ui.selectable_value(&mut s.design, skin, skin.name());
             }
-        }
-    });
+        }),
+        ui,
+    );
     ui.add_space(14.0);
     ui.label(crate::theme::medium("Density"));
     ui.weak("How much room lists and tables take. Compact fits more on screen; Larger is easier to read and touch.");
