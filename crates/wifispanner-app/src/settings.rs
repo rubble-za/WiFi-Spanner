@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use wifispanner_core::heatmap::{ColorScheme, RAMP_MAX, RAMP_MIN};
 
-use crate::theme::{Density, ThemeMode};
+use crate::theme::{Density, Skin, ThemeMode};
 use wifispanner_scan::iw::{WifiCard, default_card};
 
 /// Selectable scan times in seconds: how long scanning continues before the
@@ -56,6 +56,8 @@ pub struct Settings {
     pub theme_mode: ThemeMode,
     /// Row height, text size and spacing of lists and tables.
     pub density: Density,
+    /// The design the app wears: Material or Carbon.
+    pub design: Skin,
     /// Look for a newer release on GitHub when the app starts.
     pub check_updates: bool,
     /// The one-time offer to add a launcher and icon has been shown.
@@ -93,6 +95,7 @@ impl Default for Settings {
         Settings {
             theme_mode: ThemeMode::System,
             density: Density::Default,
+            design: Skin::Material,
             check_updates: true,
             launcher_prompted: false,
             window_size: None,

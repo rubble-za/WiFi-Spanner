@@ -262,7 +262,7 @@ impl App {
     fn new(ctx: egui::Context) -> Self {
         let ctx_for_logo = ctx.clone();
         let settings = Settings::load();
-        theme::install(&ctx, settings.theme_mode, settings.density);
+        theme::install(&ctx, settings.theme_mode, settings.density, settings.design);
         let cards = list_cards().unwrap_or_default();
         let dwell = Arc::new(AtomicU64::new(settings.dwell_secs));
         let (worker, rx) = Worker::spawn(ctx, dwell, settings.active_cards(&cards));
@@ -822,6 +822,9 @@ impl App {
         };
         if settings_ui::show(ctx, &mut open, &mut self.settings_section, &mut self.settings, &self.cards, &mut launcher) {
             theme::set_mode(ctx, self.settings.theme_mode);
+            if theme::skin(ctx) != self.settings.design {
+                theme::set_skin(ctx, self.settings.design);
+            }
             theme::set_density(ctx, self.settings.density);
             self.apply_settings();
         }

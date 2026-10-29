@@ -322,9 +322,10 @@ fn new_card(ui: &mut egui::Ui, s: f32) -> egui::Response {
     let r = theme::roles(ui.ctx());
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(CARD_W, CARD_H) * s, Sense::click());
     let painter = ui.painter();
-    painter.rect_stroke(rect, 12.0 * s, Stroke::new(1.5, r.outline), egui::StrokeKind::Inside);
+    let card_radius = theme::radius(ui.ctx(), theme::Shape::Card, 0.0) as f32 * s;
+    painter.rect_stroke(rect, card_radius, Stroke::new(1.5, r.outline), egui::StrokeKind::Inside);
     if resp.hovered() {
-        painter.rect_filled(rect, 12.0 * s, r.primary.gamma_multiply(0.08));
+        painter.rect_filled(rect, card_radius, r.primary.gamma_multiply(0.08));
     }
     painter.text(
         rect.center() - Vec2::new(0.0, 14.0 * s),
@@ -355,15 +356,16 @@ fn project_card(ui: &mut egui::Ui, e: &Entry, summary: Option<&Summary>, thumb: 
     let (card_w, thumb_h) = (CARD_W * s, THUMB_H * s);
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(CARD_W, CARD_H) * s, Sense::click());
     let painter = ui.painter();
-    painter.rect(rect, 12.0 * s, r.surface_container_low, Stroke::new(1.0, r.outline_variant), egui::StrokeKind::Inside);
+    let card_radius = theme::radius(ui.ctx(), theme::Shape::Card, 0.0) as f32 * s;
+    painter.rect(rect, card_radius, r.surface_container_low, Stroke::new(1.0, r.outline_variant), egui::StrokeKind::Inside);
     if resp.hovered() {
-        painter.rect_filled(rect, 12.0 * s, r.on_surface.gamma_multiply(0.06));
+        painter.rect_filled(rect, card_radius, r.on_surface.gamma_multiply(0.06));
     }
 
     // Thumbnail of the floor plan, fitted inside its well.
     let inset = 10.0 * s;
     let well = Rect::from_min_size(rect.min + Vec2::splat(inset), Vec2::new(card_w - 2.0 * inset, thumb_h));
-    painter.rect_filled(well, CornerRadius::same((8.0 * s) as u8), r.surface_container_lowest);
+    painter.rect_filled(well, CornerRadius::same((theme::radius(ui.ctx(), theme::Shape::Row, 0.0) as f32 * s) as u8), r.surface_container_lowest);
     match thumb {
         Some(tex) => {
             let size = tex.size_vec2();

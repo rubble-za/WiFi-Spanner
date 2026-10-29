@@ -708,7 +708,7 @@ impl FloorTab {
                 egui::Frame::new()
                     .fill(r.surface_container_high)
                     .stroke(Stroke::new(1.0, r.outline_variant))
-                    .corner_radius(20)
+                    .corner_radius(theme::radius(ctx, theme::Shape::Panel, 0.0))
                     .inner_margin(14)
                     .shadow(theme::shadow(r.shadow, 16, 0.18))
                     .show(ui, |ui| {
@@ -928,7 +928,7 @@ impl FloorTab {
         let open = egui::Popup::is_id_open(ctx, button.id.with("popup")) || button.is_pointer_button_down_on();
         if open || button.hovered() {
             let opacity = if open { 0.12 } else { 0.08 };
-            ui.painter().circle_filled(rect.center(), size / 2.0, theme::state_layer(Color32::TRANSPARENT, r.on_surface, opacity));
+            ui.painter().rect_filled(rect, theme::radius(ctx, theme::Shape::Pill, size), theme::state_layer(Color32::TRANSPARENT, r.on_surface, opacity));
         }
         // One dot above two, evenly round the centre.
         let (c, spread) = (rect.center(), size * 0.17);
@@ -1474,9 +1474,9 @@ impl FloorTab {
                 for (j, (name, detail, colour, selected)) in pair.iter().enumerate() {
                     let (rect, resp) = ui.allocate_exact_size(Vec2::new(col_w, row_h), Sense::click());
                     if *selected {
-                        ui.painter().rect_filled(rect, 8.0, r.secondary_container);
+                        ui.painter().rect_filled(rect, theme::radius(ui.ctx(), theme::Shape::Row, 0.0), r.secondary_container);
                     } else if resp.hovered() {
-                        ui.painter().rect_filled(rect, 8.0, theme::state_layer(Color32::TRANSPARENT, r.on_surface, 0.08));
+                        ui.painter().rect_filled(rect, theme::radius(ui.ctx(), theme::Shape::Row, 0.0), theme::state_layer(Color32::TRANSPARENT, r.on_surface, 0.08));
                     }
                     ui.painter().circle_filled(rect.left_center() + Vec2::new(12.0, 0.0), 5.0, *colour);
                     ui.painter().text(rect.left_center() + Vec2::new(24.0, 0.0), egui::Align2::LEFT_CENTER, name, font.clone(), r.on_surface);
@@ -1566,7 +1566,7 @@ impl FloorTab {
                 egui::Frame::new()
                     .fill(r.surface_container_high)
                     .stroke(Stroke::new(1.0, r.outline_variant))
-                    .corner_radius(20)
+                    .corner_radius(theme::radius(ctx, theme::Shape::Panel, 0.0))
                     .inner_margin(10)
                     .shadow(theme::shadow(r.shadow, 16, 0.18))
                     .show(ui, |ui| match self.tool {
@@ -1578,7 +1578,7 @@ impl FloorTab {
                         }
                         tool => {
                             // The lists of materials and kinds are in two columns, so those menus are wider.
-                            ui.set_width(if tool == Tool::Client { 250.0 } else { 400.0 });
+                            ui.set_width(if tool == Tool::Client { 250.0 } else if theme::skin(ctx) == theme::Skin::Carbon { 470.0 } else { 400.0 });
                             match tool {
                                 Tool::Walls => self.walls_content(ui, floor, &mut walls_out),
                                 Tool::Select => self.select_content(ui, floor, &mut walls_out, &mut aps_out),
@@ -1823,9 +1823,9 @@ impl FloorTab {
         let custom = current.is_none();
         let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0 * theme::density(ui.ctx()).font_scale()), Sense::click());
         if custom {
-            ui.painter().rect_filled(rect, 8.0, r.secondary_container);
+            ui.painter().rect_filled(rect, theme::radius(ui.ctx(), theme::Shape::Row, 0.0), r.secondary_container);
         } else if resp.hovered() {
-            ui.painter().rect_filled(rect, 8.0, theme::state_layer(Color32::TRANSPARENT, r.on_surface, 0.08));
+            ui.painter().rect_filled(rect, theme::radius(ui.ctx(), theme::Shape::Row, 0.0), theme::state_layer(Color32::TRANSPARENT, r.on_surface, 0.08));
         }
         ui.painter().text(rect.left_center() + Vec2::new(10.0, 0.0), egui::Align2::LEFT_CENTER, "Custom (set power by hand)", egui::TextStyle::Body.resolve(ui.style()), r.on_surface);
         if resp.clicked() {
@@ -1841,9 +1841,9 @@ impl FloorTab {
                 let on = current.as_deref() == Some(m.id().as_str());
                 let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0 * theme::density(ui.ctx()).font_scale()), Sense::click());
                 if on {
-                    ui.painter().rect_filled(rect, 8.0, r.secondary_container);
+                    ui.painter().rect_filled(rect, theme::radius(ui.ctx(), theme::Shape::Row, 0.0), r.secondary_container);
                 } else if resp.hovered() {
-                    ui.painter().rect_filled(rect, 8.0, theme::state_layer(Color32::TRANSPARENT, r.on_surface, 0.08));
+                    ui.painter().rect_filled(rect, theme::radius(ui.ctx(), theme::Shape::Row, 0.0), theme::state_layer(Color32::TRANSPARENT, r.on_surface, 0.08));
                 }
                 let body = egui::TextStyle::Body.resolve(ui.style());
                 // The bands on the right; the maker's name and how far to trust the figures on hover.
@@ -2315,7 +2315,7 @@ impl FloorTab {
                 egui::Frame::new()
                     .fill(r.surface_container_high)
                     .stroke(Stroke::new(1.0, r.outline_variant))
-                    .corner_radius(20)
+                    .corner_radius(theme::radius(ctx, theme::Shape::Panel, 0.0))
                     .inner_margin(14)
                     .shadow(theme::shadow(r.shadow, 16, 0.18))
                     .show(ui, |ui| {
@@ -2384,7 +2384,7 @@ impl FloorTab {
                 let fill = if open { r.secondary_container } else { r.surface_container_high };
                 let fill = if resp.hovered() { theme::state_layer(fill, r.on_surface, 0.08) } else { fill };
                 let painter = ui.painter();
-                painter.rect(rect, round_size(ctx) / 2.0, fill, Stroke::new(1.0, r.outline_variant), egui::StrokeKind::Inside);
+                painter.rect(rect, theme::radius(ctx, theme::Shape::Pill, round_size(ctx)), fill, Stroke::new(1.0, r.outline_variant), egui::StrokeKind::Inside);
                 if let Some(icon) = &self.layers_icon {
                     let side = round_size(ctx) * 0.5;
                     let colour = if open { r.on_secondary_container } else { r.on_surface };
@@ -2411,7 +2411,7 @@ impl FloorTab {
                 let fill = if open { r.secondary_container } else { r.surface_container_high };
                 let fill = if resp.hovered() { theme::state_layer(fill, r.on_surface, 0.08) } else { fill };
                 let painter = ui.painter();
-                painter.rect(rect, round_size(ctx) / 2.0, fill, Stroke::new(1.0, r.outline_variant), egui::StrokeKind::Inside);
+                painter.rect(rect, theme::radius(ctx, theme::Shape::Pill, round_size(ctx)), fill, Stroke::new(1.0, r.outline_variant), egui::StrokeKind::Inside);
                 let colour = if open { r.on_secondary_container } else { r.on_surface };
                 painter.text(rect.center(), egui::Align2::CENTER_CENTER, ICON_ROUTER.codepoint, egui::FontId::new(round_size(ctx) * 0.5, ICON_ROUTER.font_family()), colour);
                 toggled = resp.on_hover_text("Add Devices").clicked();

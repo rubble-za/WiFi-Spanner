@@ -90,6 +90,16 @@ fn general(ui: &mut egui::Ui, s: &mut Settings, launcher: &mut LauncherView) {
         }
     });
     ui.add_space(14.0);
+    ui.label(crate::theme::medium("Design"));
+    ui.weak("The same layouts in two looks, to compare: Material Design or IBM Carbon.");
+    ui.horizontal(|ui| {
+        for skin in crate::theme::Skin::ALL {
+            if crate::theme::chip(ui, s.design == skin, None, skin.name()).clicked() {
+                s.design = skin;
+            }
+        }
+    });
+    ui.add_space(14.0);
     ui.label(crate::theme::medium("Density"));
     ui.weak("How much room lists and tables take. Compact fits more on screen; Larger is easier to read and touch.");
     ui.horizontal_wrapped(|ui| {

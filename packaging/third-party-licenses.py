@@ -53,6 +53,16 @@ for text, labels in sorted(groups.values(), key=lambda g: g[1][0]):
     out += ["=" * 78, "Applies to:"]
     out += ["  " + l for l in sorted(set(labels))]
     out += ["-" * 78, text, ""]
+# Fonts bundled in the app's own sources rather than through a library.
+out += ["=" * 78, "Applies to:", "  IBM Plex Sans (crates/wifispanner-app/assets/fonts: Regular, Medium, SemiBold)",
+        "-" * 78,
+        "IBM Plex Sans is Copyright 2018 IBM Corp. with Reserved Font Name \"Plex\", and is",
+        "licensed under the SIL Open Font License, Version 1.1. The files are bundled",
+        "unmodified. The licence text and its FAQ are at:",
+        "",
+        "  https://scripts.sil.org/OFL",
+        "  https://github.com/IBM/plex",
+        ""]
 if no_text:
     out += ["=" * 78, "Libraries whose licence is stated in their metadata but that ship no separate",
             "licence file (the named licence applies):"]

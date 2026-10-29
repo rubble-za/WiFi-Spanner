@@ -13555,6 +13555,17 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 
 ==============================================================================
+Applies to:
+  IBM Plex Sans (crates/wifispanner-app/assets/fonts: Regular, Medium, SemiBold)
+------------------------------------------------------------------------------
+IBM Plex Sans is Copyright 2018 IBM Corp. with Reserved Font Name "Plex", and is
+licensed under the SIL Open Font License, Version 1.1. The files are bundled
+unmodified. The licence text and its FAQ are at:
+
+  https://scripts.sil.org/OFL
+  https://github.com/IBM/plex
+
+==============================================================================
 Libraries whose licence is stated in their metadata but that ship no separate
 licence file (the named licence applies):
   accesskit 0.25.2 (MIT OR Apache-2.0)

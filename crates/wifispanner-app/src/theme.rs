@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 rubble-za. See the LICENSE and NOTICE files.
 
-//! Material Design 3 for egui: colour roles generated from a seed colour,
-//! shapes, spacing, type, and a few components egui lacks (tabs). egui has no
-//! Material widgets, so this styles egui's own widgets to match the spec.
+//! Two looks for the same layouts: Material Design 3 (colour roles generated from
+//! a seed colour, pills, tonal buttons) and IBM's Carbon (flat, square, IBM Plex).
+//! egui has neither, so this styles egui's own widgets and draws the few
+//! components it lacks (tabs, pills, a slider) to match each.
 
 use std::sync::OnceLock;
 
@@ -20,8 +21,75 @@ fn centred(font: FontId, color: Color32) -> egui::TextFormat {
     egui::TextFormat { valign: egui::Align::Center, ..egui::TextFormat::simple(font, color) }
 }
 
-/// Font family for the Medium weight, used by buttons, tabs and labels.
-const MEDIUM: &str = "roboto-medium";
+/// Font families added at start. Roboto serves the Material look and IBM Plex the Carbon one.
+const ROBOTO_MEDIUM_FAMILY: &str = "roboto-medium";
+const PLEX_REGULAR_FAMILY: &str = "plex";
+const PLEX_MEDIUM_FAMILY: &str = "plex-medium";
+const PLEX_SEMIBOLD_FAMILY: &str = "plex-semibold";
+
+/// Which design the app wears.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Skin {
+    /// Material Design 3: pills, tonal buttons, soft corners, Roboto.
+    #[default]
+    Material,
+    /// IBM Carbon: flat and square, IBM Plex, a blue accent.
+    Carbon,
+}
+
+impl Skin {
+    pub const ALL: [Skin; 2] = [Skin::Material, Skin::Carbon];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Skin::Material => "Material Design",
+            Skin::Carbon => "IBM Carbon",
+        }
+    }
+}
+
+/// The skin in use.
+pub fn skin(ctx: &egui::Context) -> Skin {
+    ctx.data(|d| d.get_temp(egui::Id::unique("skin"))).unwrap_or_default()
+}
+
+/// The text style for labels in the medium weight.
+pub fn medium_style() -> TextStyle {
+    TextStyle::Name("medium".into())
+}
+
+/// The text style for headings inside menus and panels.
+pub fn heading_style() -> TextStyle {
+    TextStyle::Name("heading".into())
+}
+
+/// The kinds of rounded shape in the app; Material rounds them, Carbon squares them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shape {
+    /// A button or chip, as tall as `height`.
+    Pill,
+    /// A list row or small control.
+    Row,
+    /// A card or tile.
+    Card,
+    /// A floating menu over the plan.
+    Panel,
+    Dialog,
+}
+
+/// Corner radius for a shape in the skin in use. `height` is only for pills.
+pub fn radius(ctx: &egui::Context, shape: Shape, height: f32) -> u8 {
+    match skin(ctx) {
+        Skin::Carbon => 0,
+        Skin::Material => match shape {
+            Shape::Pill => (height / 2.0).round() as u8,
+            Shape::Row => 8,
+            Shape::Card => 12,
+            Shape::Panel => 20,
+            Shape::Dialog => 28,
+        },
+    }
+}
 
 /// How much room lists and tables take: row height, text size and spacing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -151,6 +219,8 @@ impl ThemeMode {
 #[allow(dead_code)] // some roles are for components added in later phases
 pub struct Roles {
     pub primary: Color32,
+    /// Accent colour for text and thin lines on the surface: the primary in Material, a lighter blue in dark Carbon.
+    pub link: Color32,
     pub on_primary: Color32,
     pub primary_container: Color32,
     pub on_primary_container: Color32,
@@ -181,6 +251,7 @@ fn c(rgb: Rgb) -> Color32 {
 fn roles_from(s: &material_colors::scheme::Scheme) -> Roles {
     Roles {
         primary: c(s.primary),
+        link: c(s.primary),
         on_primary: c(s.on_primary),
         primary_container: c(s.primary_container),
         on_primary_container: c(s.on_primary_container),
@@ -205,25 +276,87 @@ fn roles_from(s: &material_colors::scheme::Scheme) -> Roles {
     }
 }
 
-/// Light and dark roles, generated once from the seed.
-fn palettes() -> &'static (Roles, Roles) {
-    static PALETTES: OnceLock<(Roles, Roles)> = OnceLock::new();
-    PALETTES.get_or_init(|| {
-        let theme = ThemeBuilder::with_source(Rgb::from_u32(SEED)).build();
-        (roles_from(&theme.schemes.light), roles_from(&theme.schemes.dark))
-    })
-}
-
-pub fn roles_for(theme: egui::Theme) -> &'static Roles {
-    match theme {
-        egui::Theme::Light => &palettes().0,
-        egui::Theme::Dark => &palettes().1,
+/// Carbon's tokens, from the White theme (light) and Gray 100 (dark), onto the roles this app uses.
+fn carbon_roles(dark: bool) -> Roles {
+    let rgb = |hex: u32| Color32::from_rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8);
+    if dark {
+        Roles {
+            primary: rgb(0x0f62fe),
+            link: rgb(0x78a9ff),
+            on_primary: rgb(0xffffff),
+            primary_container: rgb(0x393939),
+            on_primary_container: rgb(0xf4f4f4),
+            secondary_container: rgb(0x393939),
+            on_secondary_container: rgb(0xf4f4f4),
+            error: rgb(0xff8389),
+            error_container: rgb(0x520408),
+            on_error_container: rgb(0xffd7d9),
+            surface: rgb(0x161616),
+            surface_container_lowest: rgb(0x161616),
+            surface_container_low: rgb(0x1c1c1c),
+            surface_container: rgb(0x262626),
+            surface_container_high: rgb(0x262626),
+            surface_container_highest: rgb(0x393939),
+            on_surface: rgb(0xf4f4f4),
+            on_surface_variant: rgb(0xc6c6c6),
+            outline: rgb(0x8d8d8d),
+            outline_variant: rgb(0x525252),
+            inverse_surface: rgb(0xf4f4f4),
+            inverse_on_surface: rgb(0x161616),
+            shadow: Color32::BLACK,
+        }
+    } else {
+        Roles {
+            primary: rgb(0x0f62fe),
+            link: rgb(0x0f62fe),
+            on_primary: rgb(0xffffff),
+            primary_container: rgb(0xe0e0e0),
+            on_primary_container: rgb(0x161616),
+            secondary_container: rgb(0xe0e0e0),
+            on_secondary_container: rgb(0x161616),
+            error: rgb(0xda1e28),
+            error_container: rgb(0xfff1f1),
+            on_error_container: rgb(0xa2191f),
+            surface: rgb(0xffffff),
+            surface_container_lowest: rgb(0xf4f4f4),
+            surface_container_low: rgb(0xf4f4f4),
+            surface_container: rgb(0xf4f4f4),
+            surface_container_high: rgb(0xffffff),
+            surface_container_highest: rgb(0xe8e8e8),
+            on_surface: rgb(0x161616),
+            on_surface_variant: rgb(0x525252),
+            outline: rgb(0x8d8d8d),
+            outline_variant: rgb(0xc6c6c6),
+            inverse_surface: rgb(0x393939),
+            inverse_on_surface: rgb(0xf4f4f4),
+            shadow: Color32::BLACK,
+        }
     }
 }
 
-/// The roles for whichever theme is showing now.
+/// Light and dark roles of both skins, built once (Material's from the seed).
+fn palettes() -> &'static [(Roles, Roles); 2] {
+    static PALETTES: OnceLock<[(Roles, Roles); 2]> = OnceLock::new();
+    PALETTES.get_or_init(|| {
+        let theme = ThemeBuilder::with_source(Rgb::from_u32(SEED)).build();
+        [(roles_from(&theme.schemes.light), roles_from(&theme.schemes.dark)), (carbon_roles(false), carbon_roles(true))]
+    })
+}
+
+pub fn roles_for(theme: egui::Theme, skin: Skin) -> &'static Roles {
+    let pair = &palettes()[match skin {
+        Skin::Material => 0,
+        Skin::Carbon => 1,
+    }];
+    match theme {
+        egui::Theme::Light => &pair.0,
+        egui::Theme::Dark => &pair.1,
+    }
+}
+
+/// The roles for whichever skin and theme are showing now.
 pub fn roles(ctx: &egui::Context) -> &'static Roles {
-    roles_for(ctx.theme())
+    roles_for(ctx.theme(), skin(ctx))
 }
 
 /// `color` with `layer` laid over it at `opacity`: Material's "state layer"
@@ -234,14 +367,22 @@ pub fn state_layer(color: Color32, layer: Color32, opacity: f32) -> Color32 {
 }
 
 /// Install the fonts, colours and shapes, and choose the light/dark mode.
-/// Call once at start; call `set_mode` when the user changes the mode.
-pub fn install(ctx: &egui::Context, mode: ThemeMode, density: Density) {
+/// Call once at start; call `set_mode`, `set_density` or `set_skin` when the user changes them.
+pub fn install(ctx: &egui::Context, mode: ThemeMode, density: Density, skin: Skin) {
     egui_material_icons::initialize(ctx);
     install_fonts(ctx);
-    ctx.set_visuals_of(egui::Theme::Light, visuals(roles_for(egui::Theme::Light), false));
-    ctx.set_visuals_of(egui::Theme::Dark, visuals(roles_for(egui::Theme::Dark), true));
-    set_density(ctx, density);
+    ctx.data_mut(|d| d.insert_temp(egui::Id::unique("density"), density));
+    set_skin(ctx, skin);
     set_mode(ctx, mode);
+}
+
+/// Change the design: colours, shapes and type, for both light and dark.
+pub fn set_skin(ctx: &egui::Context, skin: Skin) {
+    ctx.data_mut(|d| d.insert_temp(egui::Id::unique("skin"), skin));
+    ctx.set_visuals_of(egui::Theme::Light, visuals(roles_for(egui::Theme::Light, skin), false, skin));
+    ctx.set_visuals_of(egui::Theme::Dark, visuals(roles_for(egui::Theme::Dark, skin), true, skin));
+    let d = density(ctx);
+    ctx.all_styles_mut(|style| shape_style(style, d, skin));
 }
 
 pub fn set_mode(ctx: &egui::Context, mode: ThemeMode) {
@@ -251,7 +392,8 @@ pub fn set_mode(ctx: &egui::Context, mode: ThemeMode) {
 /// Apply a density to both themes' type sizes and spacing.
 pub fn set_density(ctx: &egui::Context, density: Density) {
     ctx.data_mut(|d| d.insert_temp(egui::Id::unique("density"), density));
-    ctx.all_styles_mut(|style| shape_style(style, density));
+    let skin = skin(ctx);
+    ctx.all_styles_mut(|style| shape_style(style, density, skin));
 }
 
 /// The density in use.
@@ -263,6 +405,7 @@ fn install_fonts(ctx: &egui::Context) {
     use damascene_fonts_roboto::{ROBOTO_MEDIUM, ROBOTO_REGULAR};
     use egui::{FontData, FontInsert, InsertFontFamily};
     use egui::epaint::text::FontPriority;
+    // Roboto is the base family; IBM Plex has families of its own that the Carbon skin's text styles name.
     ctx.add_font(FontInsert::new(
         "roboto",
         FontData::from_static(ROBOTO_REGULAR),
@@ -271,58 +414,78 @@ fn install_fonts(ctx: &egui::Context) {
             InsertFontFamily { family: FontFamily::Monospace, priority: FontPriority::Lowest },
         ],
     ));
-    ctx.add_font(FontInsert::new(
-        MEDIUM,
-        FontData::from_static(ROBOTO_MEDIUM),
-        vec![InsertFontFamily { family: FontFamily::Name(MEDIUM.into()), priority: FontPriority::Highest }],
-    ));
+    let named = |name: &str, data: &'static [u8]| {
+        FontInsert::new(name, FontData::from_static(data), vec![InsertFontFamily { family: FontFamily::Name(name.into()), priority: FontPriority::Highest }])
+    };
+    ctx.add_font(named(ROBOTO_MEDIUM_FAMILY, ROBOTO_MEDIUM));
+    ctx.add_font(named(PLEX_REGULAR_FAMILY, include_bytes!("../assets/fonts/IBMPlexSans-Regular.ttf")));
+    ctx.add_font(named(PLEX_MEDIUM_FAMILY, include_bytes!("../assets/fonts/IBMPlexSans-Medium.ttf")));
+    ctx.add_font(named(PLEX_SEMIBOLD_FAMILY, include_bytes!("../assets/fonts/IBMPlexSans-SemiBold.ttf")));
 }
 
-/// Type scale and spacing, shared by both themes.
-fn shape_style(style: &mut egui::Style, density: Density) {
-    let medium = FontFamily::Name(MEDIUM.into());
-    style.text_styles = [
-        (TextStyle::Heading, FontId::new(24.0, FontFamily::Proportional)),
-        (TextStyle::Body, FontId::new(15.0 * density.font_scale(), FontFamily::Proportional)),
-        (TextStyle::Button, FontId::new(15.0 * density.font_scale(), medium)),
-        (TextStyle::Small, FontId::new(12.0 * density.font_scale().max(0.9), FontFamily::Proportional)),
-        (TextStyle::Monospace, FontId::new(14.0 * density.font_scale(), FontFamily::Monospace)),
-    ]
-    .into();
+/// Type scale and spacing for a skin, shared by both themes.
+fn shape_style(style: &mut egui::Style, density: Density, skin: Skin) {
+    let scale = density.font_scale();
+    let name = |n: &str| FontFamily::Name(n.into());
+    style.text_styles = match skin {
+        Skin::Material => vec![
+            (TextStyle::Heading, FontId::new(24.0, FontFamily::Proportional)),
+            (TextStyle::Body, FontId::new(15.0 * scale, FontFamily::Proportional)),
+            (TextStyle::Button, FontId::new(15.0 * scale, name(ROBOTO_MEDIUM_FAMILY))),
+            (TextStyle::Small, FontId::new(12.0 * scale.max(0.9), FontFamily::Proportional)),
+            (TextStyle::Monospace, FontId::new(14.0 * scale, FontFamily::Monospace)),
+            (medium_style(), FontId::new(15.0 * scale, name(ROBOTO_MEDIUM_FAMILY))),
+            (heading_style(), FontId::new(16.5 * scale, name(ROBOTO_MEDIUM_FAMILY))),
+        ],
+        // Carbon's body is 14 px; its buttons are the same size in the regular weight.
+        Skin::Carbon => vec![
+            (TextStyle::Heading, FontId::new(24.0, name(PLEX_SEMIBOLD_FAMILY))),
+            (TextStyle::Body, FontId::new(14.0 * scale, name(PLEX_REGULAR_FAMILY))),
+            (TextStyle::Button, FontId::new(14.0 * scale, name(PLEX_REGULAR_FAMILY))),
+            (TextStyle::Small, FontId::new(12.0 * scale.max(0.9), name(PLEX_REGULAR_FAMILY))),
+            (TextStyle::Monospace, FontId::new(14.0 * scale, FontFamily::Monospace)),
+            (medium_style(), FontId::new(14.0 * scale, name(PLEX_MEDIUM_FAMILY))),
+            (heading_style(), FontId::new(15.5 * scale, name(PLEX_SEMIBOLD_FAMILY))),
+        ],
+    }
+    .into_iter()
+    .collect();
     let sp = &mut style.spacing;
     sp.item_spacing = egui::vec2(10.0, density.item_gap());
-    sp.button_padding = egui::vec2(20.0, density.padding_y());
+    sp.button_padding = egui::vec2(if skin == Skin::Carbon { 16.0 } else { 20.0 }, density.padding_y());
     sp.interact_size = egui::vec2(48.0, density.row_height());
-    sp.window_margin = Margin::same(24);
+    sp.window_margin = Margin::same(if skin == Skin::Carbon { 16 } else { 24 });
     sp.menu_margin = Margin::symmetric(8, 8);
     sp.slider_width = 200.0;
 }
 
-/// Material 3 colours and shapes mapped onto egui's widget states.
-fn visuals(r: &Roles, dark: bool) -> egui::Visuals {
+/// A skin's colours and shapes mapped onto egui's widget states.
+fn visuals(r: &Roles, dark: bool, skin: Skin) -> egui::Visuals {
+    let carbon = skin == Skin::Carbon;
     let mut v = if dark { egui::Visuals::dark() } else { egui::Visuals::light() };
     v.panel_fill = r.surface;
     v.window_fill = r.surface_container_high;
     v.extreme_bg_color = r.surface_container_lowest;
     v.faint_bg_color = r.surface_container_low;
     v.code_bg_color = r.surface_container_highest;
-    v.hyperlink_color = r.primary;
+    v.hyperlink_color = r.link;
     v.error_fg_color = r.error;
-    v.window_stroke = Stroke::NONE;
-    v.window_corner_radius = CornerRadius::same(28);
-    v.menu_corner_radius = CornerRadius::same(12);
-    v.window_shadow = shadow(r.shadow, 24, 0.20);
-    v.popup_shadow = shadow(r.shadow, 14, 0.22);
-    v.selection.bg_fill = r.primary_container;
-    v.selection.stroke = Stroke::new(2.0, r.primary); // also the keyboard focus ring
-    v.text_cursor.stroke = Stroke::new(2.0, r.primary);
+    v.window_stroke = if carbon { Stroke::new(1.0, r.outline_variant) } else { Stroke::NONE };
+    v.window_corner_radius = CornerRadius::same(if carbon { 0 } else { 28 });
+    v.menu_corner_radius = CornerRadius::same(if carbon { 0 } else { 12 });
+    v.window_shadow = shadow(r.shadow, if carbon { 12 } else { 24 }, if carbon { 0.30 } else { 0.20 });
+    v.popup_shadow = shadow(r.shadow, if carbon { 8 } else { 14 }, if carbon { 0.30 } else { 0.22 });
+    v.selection.bg_fill = if carbon { r.primary.gamma_multiply(0.4) } else { r.primary_container };
+    // Also the keyboard focus ring: Carbon's is white on dark and blue on light.
+    v.selection.stroke = Stroke::new(2.0, if carbon { if dark { Color32::WHITE } else { r.primary } } else { r.primary });
+    v.text_cursor.stroke = Stroke::new(2.0, if carbon { r.on_surface } else { r.primary });
     v.slider_trailing_fill = true;
     v.handle_shape = egui::style::HandleShape::Circle;
     v.indent_has_left_vline = false;
     v.striped = true;
 
-    // Pills, like the buttons: egui rounds no further than half a control's height.
-    let radius = CornerRadius::same(20);
+    // Pills in Material (egui rounds no further than half a control's height), squares in Carbon.
+    let radius = CornerRadius::same(if carbon { 0 } else { 20 });
     let w = &mut v.widgets;
     // Labels and frames.
     w.noninteractive.bg_fill = r.surface;
@@ -330,23 +493,45 @@ fn visuals(r: &Roles, dark: bool) -> egui::Visuals {
     w.noninteractive.bg_stroke = Stroke::new(1.0, r.outline_variant);
     w.noninteractive.fg_stroke = Stroke::new(1.0, r.on_surface);
     w.noninteractive.corner_radius = radius;
-    // Buttons at rest are "tonal": secondary container with matching text.
-    w.inactive.bg_fill = r.surface_container_highest;
-    w.inactive.weak_bg_fill = r.secondary_container;
-    w.inactive.bg_stroke = Stroke::NONE;
-    w.inactive.fg_stroke = Stroke::new(1.0, r.on_secondary_container);
-    w.inactive.corner_radius = radius;
-    // Hover and press add Material's 8% and 12% state layers.
-    w.hovered.bg_fill = state_layer(r.surface_container_highest, r.on_surface, 0.08);
-    w.hovered.weak_bg_fill = state_layer(r.secondary_container, r.on_secondary_container, 0.08);
-    w.hovered.bg_stroke = Stroke::new(1.0, r.outline);
-    w.hovered.fg_stroke = Stroke::new(1.0, r.on_secondary_container);
-    w.hovered.corner_radius = radius;
-    w.active.bg_fill = state_layer(r.surface_container_highest, r.on_surface, 0.12);
-    w.active.weak_bg_fill = state_layer(r.secondary_container, r.on_secondary_container, 0.12);
-    w.active.bg_stroke = Stroke::new(1.0, r.primary);
-    w.active.fg_stroke = Stroke::new(1.0, r.on_secondary_container);
-    w.active.corner_radius = radius;
+    if carbon {
+        // Fields and controls: the field colour, a stronger bottom edge on hover, no tonal buttons.
+        let field = if dark { Color32::from_rgb(0x26, 0x26, 0x26) } else { Color32::from_rgb(0xf4, 0xf4, 0xf4) };
+        let hover = if dark { Color32::from_rgb(0x33, 0x33, 0x33) } else { Color32::from_rgb(0xe8, 0xe8, 0xe8) };
+        let press = if dark { Color32::from_rgb(0x39, 0x39, 0x39) } else { Color32::from_rgb(0xe0, 0xe0, 0xe0) };
+        w.inactive.bg_fill = field;
+        w.inactive.weak_bg_fill = field;
+        w.inactive.bg_stroke = Stroke::NONE;
+        w.inactive.fg_stroke = Stroke::new(1.0, r.on_surface);
+        w.inactive.corner_radius = radius;
+        w.hovered.bg_fill = hover;
+        w.hovered.weak_bg_fill = hover;
+        w.hovered.bg_stroke = Stroke::new(1.0, r.outline);
+        w.hovered.fg_stroke = Stroke::new(1.0, r.on_surface);
+        w.hovered.corner_radius = radius;
+        w.active.bg_fill = press;
+        w.active.weak_bg_fill = press;
+        w.active.bg_stroke = Stroke::new(1.0, r.link);
+        w.active.fg_stroke = Stroke::new(1.0, r.on_surface);
+        w.active.corner_radius = radius;
+    } else {
+        // Buttons at rest are "tonal": secondary container with matching text.
+        w.inactive.bg_fill = r.surface_container_highest;
+        w.inactive.weak_bg_fill = r.secondary_container;
+        w.inactive.bg_stroke = Stroke::NONE;
+        w.inactive.fg_stroke = Stroke::new(1.0, r.on_secondary_container);
+        w.inactive.corner_radius = radius;
+        // Hover and press add Material's 8% and 12% state layers.
+        w.hovered.bg_fill = state_layer(r.surface_container_highest, r.on_surface, 0.08);
+        w.hovered.weak_bg_fill = state_layer(r.secondary_container, r.on_secondary_container, 0.08);
+        w.hovered.bg_stroke = Stroke::new(1.0, r.outline);
+        w.hovered.fg_stroke = Stroke::new(1.0, r.on_secondary_container);
+        w.hovered.corner_radius = radius;
+        w.active.bg_fill = state_layer(r.surface_container_highest, r.on_surface, 0.12);
+        w.active.weak_bg_fill = state_layer(r.secondary_container, r.on_secondary_container, 0.12);
+        w.active.bg_stroke = Stroke::new(1.0, r.primary);
+        w.active.fg_stroke = Stroke::new(1.0, r.on_secondary_container);
+        w.active.corner_radius = radius;
+    }
     w.open = w.active;
     v
 }
@@ -369,7 +554,8 @@ pub fn slider(ui: &mut egui::Ui, value: &mut f64, range: std::ops::RangeInclusiv
     let r = roles(ui.ctx());
     let (lo, hi) = (*range.start(), *range.end());
     let scale = density(ui.ctx()).font_scale();
-    let (handle_r, rail_h) = (8.0 * scale, 4.0);
+    let carbon = skin(ui.ctx()) == Skin::Carbon;
+    let (handle_r, rail_h) = if carbon { (7.0 * scale, 2.0) } else { (8.0 * scale, 4.0) };
     let mut changed = false;
     ui.horizontal(|ui| {
         let width = ui.spacing().slider_width;
@@ -391,10 +577,12 @@ pub fn slider(ui: &mut egui::Ui, value: &mut f64, range: std::ops::RangeInclusiv
         let (cx, cy) = (x0 + t * (x1 - x0), rect.center().y);
         let rail = egui::Rect::from_min_max(egui::pos2(rect.left(), cy - rail_h / 2.0), egui::pos2(rect.right(), cy + rail_h / 2.0));
         let painter = ui.painter();
-        painter.rect_filled(rail, rail_h / 2.0, r.outline_variant);
-        painter.rect_filled(egui::Rect::from_min_max(rail.min, egui::pos2(cx, rail.max.y)), rail_h / 2.0, r.primary);
+        // Carbon draws its slider in the text colour rather than the accent.
+        let (rail_colour, fill_colour) = if carbon { (r.outline_variant, r.on_surface) } else { (r.outline_variant, r.primary) };
+        painter.rect_filled(rail, rail_h / 2.0, rail_colour);
+        painter.rect_filled(egui::Rect::from_min_max(rail.min, egui::pos2(cx, rail.max.y)), rail_h / 2.0, fill_colour);
         let grow = if resp.dragged() { 2.0 } else if resp.hovered() { 1.0 } else { 0.0 };
-        painter.circle_filled(egui::pos2(cx, cy), handle_r + grow, r.primary);
+        painter.circle_filled(egui::pos2(cx, cy), handle_r + grow, fill_colour);
         if resp.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
@@ -419,14 +607,14 @@ pub fn slider_f32(ui: &mut egui::Ui, value: &mut f32, range: std::ops::RangeIncl
     changed
 }
 
-/// A heading inside a menu: the body size in the medium weight, in the accent colour.
+/// A heading inside a menu or panel, in the accent colour.
 pub fn heading(ui: &egui::Ui, text: impl Into<String>) -> egui::RichText {
-    let size = TextStyle::Body.resolve(ui.style()).size;
-    egui::RichText::new(text).font(FontId::new(size * 1.1, FontFamily::Name(MEDIUM.into()))).color(roles(ui.ctx()).primary)
+    egui::RichText::new(text).text_style(heading_style()).color(roles(ui.ctx()).link)
 }
 
+/// Text in the medium weight.
 pub fn medium(text: impl Into<String>) -> egui::RichText {
-    egui::RichText::new(text).family(FontFamily::Name(MEDIUM.into()))
+    egui::RichText::new(text).text_style(medium_style())
 }
 
 /// Material button kinds: filled for the main action, tonal for secondary
@@ -446,6 +634,10 @@ struct PillStyle {
     press: Color32,
     fg: Color32,
     stroke: Stroke,
+    /// Text colour while hovered or pressed, where it changes (Carbon's tertiary button).
+    hover_fg: Option<Color32>,
+    /// A 2 px line along the bottom edge (Carbon's selected state).
+    underline: Option<Color32>,
 }
 
 /// Vertical nudges, in points, that put the middle of the icon glyph and of
@@ -461,9 +653,14 @@ const TEXT_NUDGE: f32 = 0.8;
 /// icon and a label, the right a label. Returns the left and right responses.
 pub fn split_button(ui: &mut egui::Ui, kind: ButtonKind, icon: egui_material_icons::MaterialIcon, left: &str, right: &str) -> (egui::Response, egui::Response) {
     let r = roles(ui.ctx());
-    let (fill, fg) = match kind {
-        ButtonKind::Filled => (r.primary, r.on_primary),
-        _ => (r.secondary_container, r.on_secondary_container),
+    let (fill, fg) = if skin(ui.ctx()) == Skin::Carbon {
+        let (fill, _, _, fg, _) = carbon_button(if kind == ButtonKind::Filled { ButtonKind::Filled } else { ButtonKind::Tonal }, ui.ctx().theme() == egui::Theme::Dark, r);
+        (fill, fg)
+    } else {
+        match kind {
+            ButtonKind::Filled => (r.primary, r.on_primary),
+            _ => (r.secondary_container, r.on_secondary_container),
+        }
     };
     let height = density(ui.ctx()).button_height();
     let scale = density(ui.ctx()).font_scale();
@@ -480,7 +677,7 @@ pub fn split_button(ui: &mut egui::Ui, kind: ButtonKind, icon: egui_material_ico
     let base = ui.scope_id().with(("split_button", left, right));
     let left_resp = ui.interact(left_rect, base.with("left"), egui::Sense::click());
     let right_resp = ui.interact(right_rect, base.with("right"), egui::Sense::click());
-    let radius = (height / 2.0).round() as u8;
+    let radius = radius(ui.ctx(), Shape::Pill, height);
     let painter = ui.painter();
     painter.rect_filled(rect, radius, fill);
     // The pressed or hovered half is shaded, with the pill's rounding on its outer corner only.
@@ -525,7 +722,8 @@ fn pill(ui: &mut egui::Ui, style: PillStyle, icon: Option<egui_material_icons::M
     let content_w = icon_w + text.size().x;
     let (rect, resp) = ui.allocate_exact_size(egui::vec2((content_w + 2.0 * pad).max(64.0), height), egui::Sense::click());
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
-    let radius = (height / 2.0).round() as u8;
+    let radius = radius(ui.ctx(), Shape::Pill, height);
+    let hot = resp.is_pointer_button_down_on() || resp.hovered();
     let fill = if resp.is_pointer_button_down_on() {
         style.press
     } else if resp.hovered() {
@@ -543,36 +741,73 @@ fn pill(ui: &mut egui::Ui, style: PillStyle, icon: Option<egui_material_icons::M
         let w = g.size().x;
         // Icons differ in how far up the em box they sit, so each is centred on its own ink.
         let ink = ink_centre_y(&g).unwrap_or(g.size().y / 2.0 - ICON_NUDGE);
-        painter.galley(egui::pos2(x, rect.center().y - ink), g, style.fg);
+        painter.galley_with_override_text_color(egui::pos2(x, rect.center().y - ink), g, if hot { style.hover_fg.unwrap_or(style.fg) } else { style.fg });
         x += w + gap;
     }
-    painter.galley(egui::pos2(x, rect.center().y - text.size().y / 2.0 + TEXT_NUDGE), text, style.fg);
+    painter.galley_with_override_text_color(egui::pos2(x, rect.center().y - text.size().y / 2.0 + TEXT_NUDGE), text, if hot { style.hover_fg.unwrap_or(style.fg) } else { style.fg });
+    if let Some(line) = style.underline {
+        painter.rect_filled(egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - 2.0), rect.right_bottom()), 0.0, line);
+    }
     resp
 }
 
-/// A pill-shaped Material button, optionally with a leading icon. Greys out
-/// when the `Ui` is disabled (wrap in `add_enabled_ui`).
+/// Carbon's button colours: (fill, hover fill, press fill, text, text on hover), from its
+/// primary, secondary, tertiary and ghost buttons.
+fn carbon_button(kind: ButtonKind, dark: bool, r: &Roles) -> (Color32, Color32, Color32, Color32, Option<Color32>) {
+    let rgb = |hex: u32| Color32::from_rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8);
+    let white = Color32::WHITE;
+    match kind {
+        ButtonKind::Filled => (rgb(0x0f62fe), rgb(0x0050e6), rgb(0x002d9c), white, None),
+        ButtonKind::Tonal if dark => (rgb(0x6f6f6f), rgb(0x606060), rgb(0x393939), white, None),
+        ButtonKind::Tonal => (rgb(0x393939), rgb(0x4c4c4c), rgb(0x6f6f6f), white, None),
+        // Tertiary: an outline in the text colour that fills on hover.
+        ButtonKind::Outlined if dark => (Color32::TRANSPARENT, rgb(0xf4f4f4), rgb(0xc6c6c6), white, Some(rgb(0x161616))),
+        ButtonKind::Outlined => (Color32::TRANSPARENT, rgb(0x0f62fe), rgb(0x002d9c), rgb(0x0f62fe), Some(white)),
+        // Ghost: just text until hovered.
+        ButtonKind::Text if dark => (Color32::TRANSPARENT, rgb(0x333333), rgb(0x393939), r.link, None),
+        ButtonKind::Text => (Color32::TRANSPARENT, rgb(0xe8e8e8), rgb(0xe0e0e0), r.link, None),
+    }
+}
+
+/// A button, optionally with a leading icon: a pill in Material, a rectangle in
+/// Carbon. Greys out when the `Ui` is disabled (wrap in `add_enabled_ui`).
 pub fn button(ui: &mut egui::Ui, kind: ButtonKind, icon: Option<egui_material_icons::MaterialIcon>, label: &str) -> egui::Response {
     let r = roles(ui.ctx());
+    if skin(ui.ctx()) == Skin::Carbon {
+        let (fill, hover, press, fg, hover_fg) = carbon_button(kind, ui.ctx().theme() == egui::Theme::Dark, r);
+        let stroke = if kind == ButtonKind::Outlined { Stroke::new(1.0, fg) } else { Stroke::NONE };
+        return pill(ui, PillStyle { rest: fill, hover, press, fg, stroke, hover_fg, underline: None }, icon, label);
+    }
     let (fill, fg, outline) = match kind {
         ButtonKind::Filled => (r.primary, r.on_primary, None),
         ButtonKind::Tonal => (r.secondary_container, r.on_secondary_container, None),
-        ButtonKind::Outlined => (Color32::TRANSPARENT, r.primary, Some(r.outline)),
-        ButtonKind::Text => (Color32::TRANSPARENT, r.primary, None),
+        ButtonKind::Outlined => (Color32::TRANSPARENT, r.link, Some(r.outline)),
+        ButtonKind::Text => (Color32::TRANSPARENT, r.link, None),
     };
     let layer = |opacity: f32| match kind {
         ButtonKind::Filled | ButtonKind::Tonal => state_layer(fill, fg, opacity),
         ButtonKind::Outlined | ButtonKind::Text => r.primary.gamma_multiply(opacity),
     };
     let stroke = outline.map_or(Stroke::NONE, |c| Stroke::new(1.0, c));
-    pill(ui, PillStyle { rest: fill, hover: layer(0.08), press: layer(0.12), fg, stroke }, icon, label)
+    pill(ui, PillStyle { rest: fill, hover: layer(0.08), press: layer(0.12), fg, stroke, hover_fg: None, underline: None }, icon, label)
 }
 
-/// A Material chip, shaped and sized like the buttons: outlined at rest,
-/// filled with a check mark when selected. Use a row of them for a choice
-/// among a few options.
+/// A chip, shaped and sized like the buttons: outlined at rest, filled when selected
+/// (with a check mark in Material, an underline in Carbon). Use a row of them for a
+/// choice among a few options.
 pub fn chip(ui: &mut egui::Ui, selected: bool, icon: Option<egui_material_icons::MaterialIcon>, label: &str) -> egui::Response {
     let r = roles(ui.ctx());
+    if skin(ui.ctx()) == Skin::Carbon {
+        let dark = ui.ctx().theme() == egui::Theme::Dark;
+        let hover = if dark { Color32::from_rgb(0x33, 0x33, 0x33) } else { Color32::from_rgb(0xe8, 0xe8, 0xe8) };
+        let (fill, fg, stroke) = if selected {
+            (r.secondary_container, r.on_surface, Stroke::NONE)
+        } else {
+            (Color32::TRANSPARENT, r.on_surface_variant, Stroke::new(1.0, r.outline))
+        };
+        let underline = selected.then_some(r.link);
+        return pill(ui, PillStyle { rest: fill, hover, press: r.secondary_container, fg, stroke, hover_fg: None, underline }, icon, label);
+    }
     let (fill, fg, stroke) = if selected {
         (r.secondary_container, r.on_secondary_container, Stroke::NONE)
     } else {
@@ -580,7 +815,7 @@ pub fn chip(ui: &mut egui::Ui, selected: bool, icon: Option<egui_material_icons:
     };
     let layer = |opacity: f32| if selected { state_layer(fill, fg, opacity) } else { r.on_surface.gamma_multiply(opacity) };
     let icon = if selected { Some(egui_material_icons::icons::ICON_CHECK) } else { icon };
-    pill(ui, PillStyle { rest: fill, hover: layer(0.08), press: layer(0.12), fg, stroke }, icon, label)
+    pill(ui, PillStyle { rest: fill, hover: layer(0.08), press: layer(0.12), fg, stroke, hover_fg: None, underline: None }, icon, label)
 }
 
 /// A menu entry with a check mark column that is invisible when unchecked, so
@@ -621,7 +856,7 @@ pub fn snackbar(ctx: &egui::Context, text: &str) -> bool {
         .show(ctx, |ui| {
             let frame = egui::Frame::new()
                 .fill(r.inverse_surface)
-                .corner_radius(8)
+                .corner_radius(radius(ctx, Shape::Row, 0.0))
                 .inner_margin(egui::Margin::symmetric(20, 14))
                 .shadow(shadow(r.shadow, 14, 0.25));
             let shown = frame.show(ui, |ui| {
@@ -654,10 +889,13 @@ pub fn empty_state(
     });
 }
 
-/// A Material switch (52 x 32 track, thumb that grows when on).
+/// A switch: Material's 52 x 32 track with a thumb that grows when on, or Carbon's
+/// 48 x 24 toggle, green when on.
 pub fn switch(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
     let r = roles(ui.ctx());
-    let (rect, mut resp) = ui.allocate_exact_size(egui::vec2(52.0, 32.0), egui::Sense::click());
+    let carbon = skin(ui.ctx()) == Skin::Carbon;
+    let size = if carbon { egui::vec2(48.0, 24.0) } else { egui::vec2(52.0, 32.0) };
+    let (rect, mut resp) = ui.allocate_exact_size(size, egui::Sense::click());
     if resp.clicked() {
         *on = !*on;
         resp.mark_changed();
@@ -666,6 +904,13 @@ pub fn switch(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
     let fade = if ui.is_enabled() { 1.0 } else { 0.38 };
     let lerp = |a: Color32, b: Color32| a.lerp_to_gamma(b, t).gamma_multiply(fade);
     let painter = ui.painter();
+    if carbon {
+        let off = if ui.ctx().theme() == egui::Theme::Dark { Color32::from_rgb(0x6f, 0x6f, 0x6f) } else { Color32::from_rgb(0x8d, 0x8d, 0x8d) };
+        painter.rect_filled(rect, 12.0, lerp(off, Color32::from_rgb(0x24, 0xa1, 0x48)));
+        let x = egui::lerp((rect.left() + 12.0)..=(rect.right() - 12.0), t);
+        painter.circle_filled(egui::pos2(x, rect.center().y), 9.0, Color32::WHITE.gamma_multiply(fade));
+        return resp;
+    }
     painter.rect_filled(rect, 16.0, lerp(r.surface_container_highest, r.primary));
     if t < 1.0 {
         painter.rect_stroke(rect, 16.0, Stroke::new(2.0 * (1.0 - t), r.outline.gamma_multiply(fade)), egui::StrokeKind::Inside);
@@ -701,7 +946,7 @@ pub fn card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> egui:
     egui::Frame::new()
         .fill(r.surface_container_low)
         .stroke(Stroke::new(1.0, r.outline_variant))
-        .corner_radius(12)
+        .corner_radius(radius(ui.ctx(), Shape::Card, 0.0))
         .inner_margin(16)
         .show(ui, add)
 }
@@ -719,8 +964,9 @@ pub fn dialog<R>(ctx: &egui::Context, title: &str, width: f32, add: impl FnOnce(
     let width = width.min((ctx.content_rect().width() - 80.0).max(280.0));
     let frame = egui::Frame::new()
         .fill(r.surface_container_high)
-        .corner_radius(28)
-        .inner_margin(24)
+        .stroke(if skin(ctx) == Skin::Carbon { Stroke::new(1.0, r.outline_variant) } else { Stroke::NONE })
+        .corner_radius(radius(ctx, Shape::Dialog, 0.0))
+        .inner_margin(if skin(ctx) == Skin::Carbon { 24 } else { 24 })
         .shadow(shadow(r.shadow, 24, 0.20));
     egui::Window::new(title)
         .title_bar(false)
@@ -757,17 +1003,17 @@ pub fn nav_item(ui: &mut egui::Ui, selected: bool, label: &str) -> egui::Respons
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 48.0), egui::Sense::click());
     let painter = ui.painter();
     if selected {
-        painter.rect_filled(rect, 24.0, r.secondary_container);
+        painter.rect_filled(rect, radius(ui.ctx(), Shape::Pill, 48.0), r.secondary_container);
     } else if resp.hovered() || resp.is_pointer_button_down_on() {
         let opacity = if resp.is_pointer_button_down_on() { 0.12 } else { 0.08 };
-        painter.rect_filled(rect, 24.0, r.on_surface.gamma_multiply(opacity));
+        painter.rect_filled(rect, radius(ui.ctx(), Shape::Pill, 48.0), r.on_surface.gamma_multiply(opacity));
     }
     let color = if selected { r.on_secondary_container } else { r.on_surface_variant };
     painter.text(
         egui::pos2(rect.left() + 20.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
         label,
-        FontId::new(15.0, FontFamily::Name(MEDIUM.into())),
+        medium_style().resolve(ui.style()),
         color,
     );
     resp
@@ -777,20 +1023,26 @@ pub fn nav_item(ui: &mut egui::Ui, selected: bool, label: &str) -> egui::Respons
 /// the active tab, and state layers on hover and press.
 pub fn tab(ui: &mut egui::Ui, selected: bool, label: &str, height: f32) -> egui::Response {
     let r = roles(ui.ctx());
-    let font = FontId::new(15.0, FontFamily::Name(MEDIUM.into()));
-    let color = if selected { r.primary } else { r.on_surface_variant };
+    let font = medium_style().resolve(ui.style());
+    let color = if selected { r.link } else { r.on_surface_variant };
     let galley = ui.painter().layout_no_wrap(label.to_string(), font, color);
     let size = egui::vec2(galley.size().x + 40.0, height);
     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
     let painter = ui.painter();
     if resp.hovered() || resp.is_pointer_button_down_on() {
         let opacity = if resp.is_pointer_button_down_on() { 0.12 } else { 0.08 };
-        painter.rect_filled(rect.shrink2(egui::vec2(4.0, 4.0)), 12.0, r.on_surface.gamma_multiply(opacity));
+        let inset = if skin(ui.ctx()) == Skin::Carbon { egui::Vec2::ZERO } else { egui::vec2(4.0, 4.0) };
+        painter.rect_filled(rect.shrink2(inset), radius(ui.ctx(), Shape::Card, 0.0), r.on_surface.gamma_multiply(opacity));
     }
     painter.galley(egui::pos2(rect.center().x - galley.size().x / 2.0, rect.center().y - galley.size().y / 2.0), galley, color);
     if selected {
-        let bar = egui::Rect::from_min_max(egui::pos2(rect.left() + 12.0, rect.bottom() - 3.0), egui::pos2(rect.right() - 12.0, rect.bottom()));
-        painter.rect_filled(bar, CornerRadius { nw: 3, ne: 3, sw: 0, se: 0 }, r.primary);
+        if skin(ui.ctx()) == Skin::Carbon {
+            // Carbon's selected tab: a 2 px line the width of the tab.
+            painter.rect_filled(egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - 2.0), rect.right_bottom()), 0.0, r.link);
+        } else {
+            let bar = egui::Rect::from_min_max(egui::pos2(rect.left() + 12.0, rect.bottom() - 3.0), egui::pos2(rect.right() - 12.0, rect.bottom()));
+            painter.rect_filled(bar, CornerRadius { nw: 3, ne: 3, sw: 0, se: 0 }, r.primary);
+        }
     }
     resp
 }
@@ -801,7 +1053,7 @@ mod tests {
 
     #[test]
     fn the_seed_gives_a_teal_primary_in_both_themes() {
-        let (light, dark) = (roles_for(egui::Theme::Light), roles_for(egui::Theme::Dark));
+        let (light, dark) = (roles_for(egui::Theme::Light, Skin::Material), roles_for(egui::Theme::Dark, Skin::Material));
         // Teal: green and blue clearly above red.
         for p in [light.primary, dark.primary] {
             assert!(p.g() > p.r() + 20 && p.b() > p.r() + 20, "{p:?} is not teal");
@@ -823,14 +1075,14 @@ mod tests {
             let (la, lb) = (luminance(a), luminance(b));
             (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
         }
-        for theme in [egui::Theme::Light, egui::Theme::Dark] {
-            let r = roles_for(theme);
+        for (theme, skin) in [(egui::Theme::Light, Skin::Material), (egui::Theme::Dark, Skin::Material), (egui::Theme::Light, Skin::Carbon), (egui::Theme::Dark, Skin::Carbon)] {
+            let r = roles_for(theme, skin);
             assert!(ratio(r.on_surface, r.surface) >= 7.0, "{theme:?} body text");
             assert!(ratio(r.on_secondary_container, r.secondary_container) >= 4.5, "{theme:?} tonal buttons");
             assert!(ratio(r.on_primary, r.primary) >= 4.5, "{theme:?} filled buttons");
-            assert!(ratio(r.primary, r.surface) >= 3.0, "{theme:?} tab indicator against the surface");
-            assert!(ratio(r.primary, r.surface_container_high) >= 4.5, "{theme:?} text buttons in dialogs");
-            assert!(ratio(r.primary, r.secondary_container) >= 3.0, "{theme:?} text buttons in the update banner");
+            assert!(ratio(r.link, r.surface) >= 3.0, "{theme:?} tab indicator against the surface");
+            assert!(ratio(r.link, r.surface_container_high) >= 4.5, "{theme:?} text buttons in dialogs");
+            assert!(ratio(r.link, r.secondary_container) >= 3.0, "{theme:?} text buttons in the update banner");
             assert!(ratio(r.on_surface_variant, r.surface) >= 4.5, "{theme:?} table headers and hints");
             assert!(ratio(r.on_surface_variant, r.surface_container_high) >= 4.5, "{theme:?} hints in dialogs");
             assert!(ratio(r.error, r.surface_container_high) >= 4.5, "{theme:?} error text in dialogs");
