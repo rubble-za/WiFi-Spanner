@@ -25,7 +25,7 @@ use settings::Settings;
 use theme::ButtonKind;
 use egui_material_icons::icons::{
     ICON_CHECK, ICON_CLOSE, ICON_FOLDER, ICON_FOLDER_OPEN, ICON_IMAGE, ICON_INFO, ICON_POWER_SETTINGS_NEW, ICON_REFRESH, ICON_SETTINGS,
-    ICON_SYSTEM_UPDATE, ICON_WIFI,
+    ICON_SYSTEM_UPDATE, ICON_VIEW_LIST, ICON_WIFI,
 };
 use wifispanner_scan::dwell::scan_for_many;
 use wifispanner_scan::iw::WifiCard;
@@ -51,13 +51,27 @@ const BAR_ROW_HEIGHT: f32 = 48.0;
 /// How long a snackbar message stays.
 const TOAST_FOR: Duration = Duration::from_secs(5);
 
+/// Whether to run through X11: the setting is on and an X server (XWayland)
+/// is reachable. Without one the app stays on Wayland.
+fn use_x11(settings: &Settings) -> bool {
+    settings.x11_mode && std::env::var_os("DISPLAY").is_some()
+}
+
 fn main() -> eframe::Result {
     // The window opens at its final size, so the desktop places it on screen
     // (an app cannot position itself on Wayland), and never has to grow later.
     // Until the scanner is ready it is borderless and see-through apart from
     // the splash card, and clicks pass through to whatever is behind it.
-    let start = start_size(Settings::load().window_size);
+    let saved = Settings::load();
+    let start = start_size(saved.window_size);
     let options = eframe::NativeOptions {
+        // Pen input needs X11 (XWayland); winit has no Wayland tablet support.
+        event_loop_builder: use_x11(&saved).then(|| -> eframe::EventLoopBuilderHook {
+            Box::new(|builder| {
+                use winit::platform::x11::EventLoopBuilderExtX11;
+                builder.with_x11();
+            })
+        }),
         viewport: egui::ViewportBuilder::default()
             .with_inner_size(start)
             .with_decorations(false)
@@ -238,6 +252,8 @@ struct App {
     launcher_prompt: bool,
     launcher_message: String,
     window: WindowSizing,
+    /// Whether this run uses X11, to tell when the setting needs a restart.
+    started_x11: bool,
     /// A short message shown as a snackbar, and when it appeared.
     toast: Option<(String, std::time::Instant)>,
     settings_section: settings_ui::Section,
@@ -253,7 +269,8 @@ impl App {
     fn new(ctx: egui::Context) -> Self {
         let ctx_for_logo = ctx.clone();
         let settings = Settings::load();
-        theme::install(&ctx, settings.theme_mode);
+        let started_x11 = use_x11(&settings);
+        theme::install(&ctx, settings.theme_mode, settings.density);
         let cards = list_cards().unwrap_or_default();
         let dwell = Arc::new(AtomicU64::new(settings.dwell_secs));
         let (worker, rx) = Worker::spawn(ctx, dwell, settings.active_cards(&cards));
@@ -283,6 +300,7 @@ impl App {
             launcher_prompt: false,
             launcher_message: String::new(),
             window: WindowSizing::default(),
+            started_x11,
             toast: None,
             settings_section: settings_ui::Section::default(),
             logo: logo_texture(&ctx_for_logo),
@@ -363,6 +381,19 @@ impl App {
             }
             if refresh || before != self.settings.card {
                 self.apply_settings();
+            }
+        });
+        ui.menu_button(label(ui, Some(ICON_VIEW_LIST), "Density"), |ui| {
+            let before = self.settings.density;
+            for d in theme::Density::ALL {
+                let text = theme::icon_label(ui, (before == d).then_some(ICON_CHECK), d.name());
+                if ui.selectable_label(before == d, text).clicked() {
+                    self.settings.density = d;
+                }
+            }
+            if before != self.settings.density {
+                theme::set_density(ui.ctx(), self.settings.density);
+                self.settings.save();
             }
         });
         ui.separator();
@@ -784,9 +815,11 @@ impl App {
             installed: launcher::is_installed(),
             message: self.launcher_message.clone(),
             request: None,
+            restart_for_x11: self.settings.x11_mode != self.started_x11,
         };
         if settings_ui::show(ctx, &mut open, &mut self.settings_section, &mut self.settings, &self.cards, &mut launcher) {
             theme::set_mode(ctx, self.settings.theme_mode);
+            theme::set_density(ctx, self.settings.density);
             self.apply_settings();
         }
         if let Some(add) = launcher.request {
@@ -923,8 +956,12 @@ impl eframe::App for App {
         self.toast_tick(ui.ctx());
 
         // Slim status bar at egui's default height, so it only fits its text.
-        let status_frame = egui::Frame::new().fill(roles.surface_container).inner_margin(egui::Margin::symmetric(12, 4));
+        let status_frame = egui::Frame::new().fill(roles.surface_container).inner_margin(egui::Margin::symmetric(12, 1));
         egui::Panel::bottom("scan_status").frame(status_frame).show(ui, |ui| {
+            // Information only: small text and no minimum row height keep it slim.
+            ui.style_mut().override_font_id = Some(egui::FontId::new(12.0, egui::FontFamily::Proportional));
+            ui.spacing_mut().interact_size.y = 14.0;
+            ui.visuals_mut().override_text_color = Some(roles.on_surface_variant);
             ui.horizontal(|ui| {
                 if self.scans_so_far > 0 {
                     ui.label(format!("scanning... {} done", self.scans_so_far));

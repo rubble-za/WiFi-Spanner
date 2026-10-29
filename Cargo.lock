@@ -4386,6 +4386,7 @@ dependencies = [
  "ureq",
  "wifispanner-core",
  "wifispanner-scan",
+ "winit",
 ]
 
 [[package]]

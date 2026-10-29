@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use wifispanner_core::heatmap::{ColorScheme, RAMP_MAX, RAMP_MIN};
 
-use crate::theme::ThemeMode;
+use crate::theme::{Density, ThemeMode};
 use wifispanner_scan::iw::{WifiCard, default_card};
 
 /// Selectable scan times in seconds: how long scanning continues before the
@@ -54,6 +54,11 @@ pub struct Settings {
     // General
     /// Light, dark, or follow the desktop.
     pub theme_mode: ThemeMode,
+    /// Row height, text size and spacing of lists and tables.
+    pub density: Density,
+    /// Run through X11 (XWayland) instead of Wayland, so pens and graphics
+    /// tablets work. Applies at the next start.
+    pub x11_mode: bool,
     /// Look for a newer release on GitHub when the app starts.
     pub check_updates: bool,
     /// The one-time offer to add a launcher and icon has been shown.
@@ -85,6 +90,8 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             theme_mode: ThemeMode::System,
+            density: Density::Default,
+            x11_mode: false,
             check_updates: true,
             launcher_prompted: false,
             window_size: None,

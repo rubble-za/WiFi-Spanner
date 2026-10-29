@@ -14,8 +14,67 @@ use serde::{Deserialize, Serialize};
 /// The seed colour (the corporate teal). Every colour role derives from it.
 pub const SEED: u32 = 0x008080;
 
+/// Text format with the glyphs centred on the line, so an icon and its label
+/// (which have different sizes) sit on the same middle line.
+fn centred(font: FontId, color: Color32) -> egui::TextFormat {
+    egui::TextFormat { valign: egui::Align::Center, ..egui::TextFormat::simple(font, color) }
+}
+
 /// Font family for the Medium weight, used by buttons, tabs and labels.
 const MEDIUM: &str = "roboto-medium";
+
+/// How much room lists and tables take: row height, text size and spacing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Density {
+    Compact,
+    Smaller,
+    #[default]
+    Default,
+    Larger,
+}
+
+impl Density {
+    pub const ALL: [Density; 4] = [Density::Compact, Density::Smaller, Density::Default, Density::Larger];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Density::Compact => "Compact",
+            Density::Smaller => "Smaller",
+            Density::Default => "Default",
+            Density::Larger => "Larger",
+        }
+    }
+
+    /// Minimum height of a table row, list item or field.
+    pub fn row_height(self) -> f32 {
+        match self {
+            Density::Compact => 22.0,
+            Density::Smaller => 30.0,
+            Density::Default => 40.0,
+            Density::Larger => 52.0,
+        }
+    }
+
+    /// Multiplier for body text sizes.
+    pub fn font_scale(self) -> f32 {
+        match self {
+            Density::Compact => 0.84,
+            Density::Smaller => 0.93,
+            Density::Default => 1.0,
+            Density::Larger => 1.15,
+        }
+    }
+
+    /// Vertical gap between items.
+    pub fn item_gap(self) -> f32 {
+        match self {
+            Density::Compact => 2.0,
+            Density::Smaller => 5.0,
+            Density::Default => 8.0,
+            Density::Larger => 11.0,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum ThemeMode {
@@ -135,17 +194,22 @@ pub fn state_layer(color: Color32, layer: Color32, opacity: f32) -> Color32 {
 
 /// Install the fonts, colours and shapes, and choose the light/dark mode.
 /// Call once at start; call `set_mode` when the user changes the mode.
-pub fn install(ctx: &egui::Context, mode: ThemeMode) {
+pub fn install(ctx: &egui::Context, mode: ThemeMode, density: Density) {
     egui_material_icons::initialize(ctx);
     install_fonts(ctx);
     ctx.set_visuals_of(egui::Theme::Light, visuals(roles_for(egui::Theme::Light), false));
     ctx.set_visuals_of(egui::Theme::Dark, visuals(roles_for(egui::Theme::Dark), true));
-    ctx.all_styles_mut(shape_style);
+    set_density(ctx, density);
     set_mode(ctx, mode);
 }
 
 pub fn set_mode(ctx: &egui::Context, mode: ThemeMode) {
     ctx.set_theme(mode.preference());
+}
+
+/// Apply a density to both themes' type sizes and spacing.
+pub fn set_density(ctx: &egui::Context, density: Density) {
+    ctx.all_styles_mut(|style| shape_style(style, density));
 }
 
 fn install_fonts(ctx: &egui::Context) {
@@ -168,20 +232,20 @@ fn install_fonts(ctx: &egui::Context) {
 }
 
 /// Type scale and spacing, shared by both themes.
-fn shape_style(style: &mut egui::Style) {
+fn shape_style(style: &mut egui::Style, density: Density) {
     let medium = FontFamily::Name(MEDIUM.into());
     style.text_styles = [
         (TextStyle::Heading, FontId::new(24.0, FontFamily::Proportional)),
-        (TextStyle::Body, FontId::new(15.0, FontFamily::Proportional)),
+        (TextStyle::Body, FontId::new(15.0 * density.font_scale(), FontFamily::Proportional)),
         (TextStyle::Button, FontId::new(15.0, medium)),
-        (TextStyle::Small, FontId::new(12.0, FontFamily::Proportional)),
-        (TextStyle::Monospace, FontId::new(14.0, FontFamily::Monospace)),
+        (TextStyle::Small, FontId::new(12.0 * density.font_scale().max(0.9), FontFamily::Proportional)),
+        (TextStyle::Monospace, FontId::new(14.0 * density.font_scale(), FontFamily::Monospace)),
     ]
     .into();
     let sp = &mut style.spacing;
-    sp.item_spacing = egui::vec2(10.0, 8.0);
+    sp.item_spacing = egui::vec2(10.0, density.item_gap());
     sp.button_padding = egui::vec2(20.0, 9.0);
-    sp.interact_size = egui::vec2(48.0, 40.0);
+    sp.interact_size = egui::vec2(48.0, density.row_height());
     sp.window_margin = Margin::same(24);
     sp.menu_margin = Margin::symmetric(8, 8);
     sp.slider_width = 200.0;
@@ -290,10 +354,10 @@ pub fn button(ui: &mut egui::Ui, kind: ButtonKind, icon: Option<egui_material_ic
         let font = TextStyle::Button.resolve(ui.style());
         let mut job = egui::text::LayoutJob::default();
         if let Some(icon) = icon {
-            job.append(icon.codepoint, 0.0, egui::TextFormat::simple(FontId::new(20.0, icon.font_family()), fg));
-            job.append(label, 8.0, egui::TextFormat::simple(font, fg));
+            job.append(icon.codepoint, 0.0, centred(FontId::new(20.0, icon.font_family()), fg));
+            job.append(label, 8.0, centred(font, fg));
         } else {
-            job.append(label, 0.0, egui::TextFormat::simple(font, fg));
+            job.append(label, 0.0, centred(font, fg));
         }
         ui.add(egui::Button::new(job).corner_radius(20).min_size(egui::vec2(64.0, 40.0)).wrap_mode(egui::TextWrapMode::Extend))
     })
@@ -308,15 +372,15 @@ pub fn icon_label(ui: &egui::Ui, icon: Option<egui_material_icons::MaterialIcon>
     let mut job = egui::text::LayoutJob::default();
     match icon {
         Some(icon) => {
-            job.append(icon.codepoint, 0.0, egui::TextFormat::simple(FontId::new(20.0, icon.font_family()), color));
-            job.append(label, 12.0, egui::TextFormat::simple(body, color));
+            job.append(icon.codepoint, 0.0, centred(FontId::new(20.0, icon.font_family()), color));
+            job.append(label, 12.0, centred(body, color));
         }
-        None => job.append(label, 32.0, egui::TextFormat::simple(body, color)),
+        None => job.append(label, 32.0, centred(body, color)),
     }
     job
 }
 
-/// A Material chip (8 dp corners): outlined at rest, filled with a check mark
+/// A Material chip, shaped and sized like the buttons: outlined at rest, filled with a check mark
 /// when selected. Use a row of them for a choice among a few options.
 pub fn chip(ui: &mut egui::Ui, selected: bool, icon: Option<egui_material_icons::MaterialIcon>, label: &str) -> egui::Response {
     let r = roles(ui.ctx());
@@ -339,12 +403,12 @@ pub fn chip(ui: &mut egui::Ui, selected: bool, icon: Option<egui_material_icons:
         let font = TextStyle::Button.resolve(ui.style());
         let mut job = egui::text::LayoutJob::default();
         if let Some(icon) = icon {
-            job.append(icon.codepoint, 0.0, egui::TextFormat::simple(FontId::new(18.0, icon.font_family()), fg));
-            job.append(label, 8.0, egui::TextFormat::simple(font, fg));
+            job.append(icon.codepoint, 0.0, centred(FontId::new(20.0, icon.font_family()), fg));
+            job.append(label, 8.0, centred(font, fg));
         } else {
-            job.append(label, 0.0, egui::TextFormat::simple(font, fg));
+            job.append(label, 0.0, centred(font, fg));
         }
-        ui.add(egui::Button::new(job).corner_radius(8).min_size(egui::vec2(48.0, 32.0)).wrap_mode(egui::TextWrapMode::Extend))
+        ui.add(egui::Button::new(job).corner_radius(20).min_size(egui::vec2(64.0, 40.0)).wrap_mode(egui::TextWrapMode::Extend))
     })
     .inner
 }
@@ -582,5 +646,16 @@ mod tests {
         assert_eq!(state_layer(base, Color32::BLACK, 0.0), base);
         assert_eq!(state_layer(base, Color32::BLACK, 1.0), Color32::BLACK);
         assert!(state_layer(base, Color32::BLACK, 0.08).r() < 200);
+    }
+
+    #[test]
+    fn density_levels_grow_in_row_height_text_and_gaps() {
+        let all = Density::ALL;
+        for pair in all.windows(2) {
+            assert!(pair[0].row_height() < pair[1].row_height());
+            assert!(pair[0].font_scale() < pair[1].font_scale());
+            assert!(pair[0].item_gap() < pair[1].item_gap());
+        }
+        assert_eq!((Density::Default.row_height(), Density::Default.font_scale()), (40.0, 1.0), "default is unchanged");
     }
 }

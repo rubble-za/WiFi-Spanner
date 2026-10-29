@@ -34,6 +34,8 @@ pub struct LauncherView {
     pub installed: bool,
     pub message: String,
     pub request: Option<bool>,
+    /// The X11 mode setting differs from how the app was started.
+    pub restart_for_x11: bool,
 }
 
 /// Show the dialog while `open`. Returns true if any setting changed.
@@ -90,6 +92,16 @@ fn general(ui: &mut egui::Ui, s: &mut Settings, launcher: &mut LauncherView) {
         }
     });
     ui.add_space(14.0);
+    ui.label(crate::theme::medium("Density"));
+    ui.weak("How much room lists and tables take. Compact fits more on screen; Larger is easier to read and touch.");
+    ui.horizontal_wrapped(|ui| {
+        for d in crate::theme::Density::ALL {
+            if crate::theme::chip(ui, s.density == d, None, d.name()).clicked() {
+                s.density = d;
+            }
+        }
+    });
+    ui.add_space(14.0);
     crate::theme::switch_row(ui, &mut s.check_updates, "Check for updates when the app starts");
     ui.weak(
         "Asks GitHub whether a newer release exists, which shares your IP address with GitHub. You can also check \
@@ -115,6 +127,16 @@ fn general(ui: &mut egui::Ui, s: &mut Settings, launcher: &mut LauncherView) {
     }
     if !launcher.message.is_empty() {
         ui.weak(&launcher.message);
+    }
+    ui.add_space(14.0);
+    ui.label(crate::theme::medium("Pen and tablet input"));
+    crate::theme::switch_row(ui, &mut s.x11_mode, "Pen support (X11 compatibility mode)");
+    ui.weak(
+        "On Wayland, pens and graphics tablets are not delivered to this app. X11 compatibility mode runs it \
+         through XWayland, where a pen works like a mouse. Text can look slightly softer on a scaled screen.",
+    );
+    if launcher.restart_for_x11 {
+        ui.colored_label(crate::theme::roles(ui.ctx()).primary, "Restart WiFi Spanner to apply this.");
     }
 }
 

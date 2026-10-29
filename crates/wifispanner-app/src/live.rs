@@ -15,7 +15,7 @@ pub fn show(ui: &mut egui::Ui, latest: Option<&ScanResult>) {
     nets.sort_by(|a, b| b.signal_dbm.partial_cmp(&a.signal_dbm).unwrap_or(std::cmp::Ordering::Equal));
 
     egui::ScrollArea::both().show(ui, |ui| {
-        egui::Grid::new("networks").striped(true).num_columns(10).spacing([16.0, 4.0]).show(ui, |ui| {
+        egui::Grid::new("networks").striped(true).num_columns(10).spacing([16.0, ui.spacing().item_spacing.y * 0.5]).show(ui, |ui| {
             let header = crate::theme::roles(ui.ctx()).on_surface_variant;
             for h in ["SSID", "BSSID", "Ch", "Band", "Width", "Standard", "Security", "Signal", "Seen", "Util"] {
                 ui.label(crate::theme::medium(h).color(header));
