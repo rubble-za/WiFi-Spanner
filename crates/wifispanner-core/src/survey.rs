@@ -6,6 +6,8 @@
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
+
+use crate::floors::{Affine, Placement};
 use wifispanner_scan::{Band, ScanResult};
 
 /// Signal assumed for an AP that was not heard at a surveyed spot.
@@ -15,14 +17,22 @@ pub const MISSING_DBM: f64 = -100.0;
 pub struct Project {
     /// File format version, for migrating old projects.
     pub version: u32,
-    pub floor: Floor,
+    /// The building's floors, lowest first. Never empty.
+    #[serde(default)]
+    pub floors: Vec<Floor>,
+    /// The floor being worked on.
+    #[serde(default)]
+    pub active: usize,
+    /// Projects saved before there were several floors hold just this one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    floor: Option<Floor>,
 }
 
 impl Project {
-    pub const VERSION: u32 = 1;
+    pub const VERSION: u32 = 2;
 
     pub fn new(floor: Floor) -> Self {
-        Project { version: Self::VERSION, floor }
+        Project { version: Self::VERSION, floors: vec![floor], active: 0, floor: None }
     }
 
     pub fn to_json(&self) -> serde_json::Result<String> {
@@ -30,7 +40,81 @@ impl Project {
     }
 
     pub fn from_json(s: &str) -> serde_json::Result<Self> {
-        serde_json::from_str(s)
+        let mut p: Project = serde_json::from_str(s)?;
+        if let Some(old) = p.floor.take() {
+            p.floors.insert(0, old);
+        }
+        if p.floors.is_empty() {
+            return Err(serde::de::Error::custom("the project has no floors"));
+        }
+        p.version = Self::VERSION;
+        p.active = p.active.min(p.floors.len() - 1);
+        Ok(p)
+    }
+
+    /// The floor being worked on.
+    pub fn floor(&self) -> &Floor {
+        &self.floors[self.active.min(self.floors.len() - 1)]
+    }
+
+    pub fn floor_mut(&mut self) -> &mut Floor {
+        let i = self.active.min(self.floors.len() - 1);
+        &mut self.floors[i]
+    }
+
+    /// Add a floor above the others and make it the active one.
+    pub fn add_floor(&mut self, floor: Floor) {
+        self.floors.push(floor);
+        self.active = self.floors.len() - 1;
+    }
+
+    /// Remove floor `i` unless it is the only one; returns whether it went.
+    pub fn remove_floor(&mut self, i: usize) -> bool {
+        if self.floors.len() < 2 || i >= self.floors.len() {
+            return false;
+        }
+        self.floors.remove(i);
+        self.active = self.active.min(self.floors.len() - 1);
+        true
+    }
+
+    /// Metres-per-pixel of floor `i` over that of the first floor, so that
+    /// calibrated floors line up at true size; 1 when either is unknown.
+    fn scale_of(&self, i: usize) -> f32 {
+        match (self.floors[i].metres_per_px, self.floors[0].metres_per_px) {
+            (Some(m), Some(base)) if m > 0.0 && base > 0.0 => m / base,
+            _ => 1.0,
+        }
+    }
+
+    /// From floor `i`'s pixels to the first floor's pixels.
+    pub fn to_base(&self, i: usize) -> Affine {
+        self.floors[i].placement.transform(self.scale_of(i))
+    }
+
+    /// From floor `from`'s pixels to floor `onto`'s pixels: where one floor's
+    /// features land when drawn over another.
+    pub fn overlay_transform(&self, from: usize, onto: usize) -> Affine {
+        match self.to_base(onto).inverse() {
+            Some(inv) => inv.after(&self.to_base(from)),
+            None => Affine::IDENTITY,
+        }
+    }
+
+    /// Slide floor `i` by `delta` of floor `onto`'s pixels.
+    pub fn nudge_overlay(&mut self, i: usize, onto: usize, delta: [f32; 2]) {
+        let onto_to_base = self.to_base(onto);
+        let d = [onto_to_base.a * delta[0] + onto_to_base.c * delta[1], onto_to_base.b * delta[0] + onto_to_base.d * delta[1]];
+        let p = &mut self.floors[i].placement;
+        p.offset = [p.offset[0] + d[0], p.offset[1] + d[1]];
+    }
+
+    /// Turn floor `i` to `deg` about its own centre.
+    pub fn rotate_floor(&mut self, i: usize, deg: f32) {
+        let scale = self.scale_of(i);
+        let f = &self.floors[i];
+        let centre = [f.width_px as f32 / 2.0, f.height_px as f32 / 2.0];
+        self.floors[i].placement = f.placement.rotated_about(scale, centre, deg);
     }
 }
 
@@ -51,6 +135,9 @@ pub struct Floor {
     /// Ceiling height in metres, the height of a full-height wall.
     #[serde(default = "default_ceiling")]
     pub ceiling_m: f32,
+    /// How this floor sits against the first one, for overlays.
+    #[serde(default)]
+    pub placement: Placement,
 }
 
 fn default_ceiling() -> f32 {
@@ -216,12 +303,62 @@ mod tests {
         }
     }
 
+    fn blank(name: &str, mpp: Option<f32>) -> Floor {
+        Floor { name: name.into(), image: vec![], width_px: 100, height_px: 50, metres_per_px: mpp, points: vec![], walls: vec![], ceiling_m: 3.0, placement: Placement::default() }
+    }
+
+    #[test]
+    fn a_project_saved_with_one_floor_opens_as_the_first_floor() {
+        let old = r#"{"version":1,"floor":{"name":"Old","image":"","width_px":1,"height_px":1,"metres_per_px":null,"points":[]}}"#;
+        let p = Project::from_json(old).unwrap();
+        assert_eq!((p.floors.len(), p.floor().name.as_str(), p.version), (1, "Old", Project::VERSION));
+        let saved = p.to_json().unwrap();
+        assert!(!saved.contains("\"floor\":"), "saved in the new shape: {saved}");
+        assert_eq!(Project::from_json(&saved).unwrap().floors.len(), 1);
+        assert!(Project::from_json(r#"{"version":2,"floors":[]}"#).is_err());
+    }
+
+    #[test]
+    fn floors_are_added_on_top_and_the_last_one_cannot_be_removed() {
+        let mut p = Project::new(blank("G", None));
+        assert!(!p.remove_floor(0));
+        p.add_floor(blank("1", None));
+        assert_eq!((p.floors.len(), p.active, p.floor().name.as_str()), (2, 1, "1"));
+        assert!(p.remove_floor(1));
+        assert_eq!((p.floors.len(), p.active), (1, 0));
+    }
+
+    #[test]
+    fn overlays_line_up_calibrated_floors_at_true_size() {
+        let mut p = Project::new(blank("G", Some(0.05)));
+        p.add_floor(blank("1", Some(0.10)));
+        // A point on the upper floor is half as many ground-floor pixels away: it is twice as coarse.
+        let on_ground = p.overlay_transform(1, 0).apply([100.0, 0.0]);
+        assert!((on_ground[0] - 200.0).abs() < 1e-3, "{on_ground:?}");
+        p.nudge_overlay(1, 0, [10.0, 5.0]);
+        let moved = p.overlay_transform(1, 0).apply([0.0, 0.0]);
+        assert!((moved[0] - 10.0).abs() < 1e-3 && (moved[1] - 5.0).abs() < 1e-3);
+        let back = p.overlay_transform(0, 1).apply(moved);
+        assert!(back[0].abs() < 1e-3 && back[1].abs() < 1e-3, "the reverse overlay undoes it: {back:?}");
+    }
+
+    #[test]
+    fn turning_a_floor_keeps_its_centre_in_place() {
+        let mut p = Project::new(blank("G", None));
+        p.add_floor(blank("1", None));
+        let before = p.overlay_transform(1, 0).apply([50.0, 25.0]);
+        p.rotate_floor(1, 33.0);
+        let after = p.overlay_transform(1, 0).apply([50.0, 25.0]);
+        assert!((before[0] - after[0]).abs() < 1e-3 && (before[1] - after[1]).abs() < 1e-3);
+        assert_eq!(p.floors[1].placement.rotation_deg, 33.0);
+    }
+
     #[test]
     fn projects_saved_before_walls_still_open() {
         let old = r#"{"version":1,"floor":{"name":"x","image":"","width_px":1,"height_px":1,"metres_per_px":null,"points":[]}}"#;
         let p = Project::from_json(old).unwrap();
-        assert!(p.floor.walls.is_empty());
-        assert_eq!(p.floor.ceiling_m, crate::walls::DEFAULT_CEILING_M);
+        assert!(p.floor().walls.is_empty());
+        assert_eq!(p.floor().ceiling_m, crate::walls::DEFAULT_CEILING_M);
     }
 
     #[test]
@@ -260,12 +397,13 @@ mod tests {
             points: vec![point()],
             walls: vec![crate::walls::Wall::new([1.0, 2.0], [3.0, 4.0], crate::Material::Metal)],
             ceiling_m: 4.5,
+            placement: Placement::default(),
         };
         let back = Project::from_json(&Project::new(floor).to_json().unwrap()).unwrap();
-        assert_eq!(back.floor.walls.len(), 1);
-        assert_eq!(back.floor.ceiling_m, 4.5);
-        assert_eq!(back.floor.image, vec![0, 1, 2, 255]);
-        assert_eq!(back.floor.points[0].observations.len(), 3);
-        assert_eq!(back.floor.metres_per_px, Some(0.05));
+        assert_eq!(back.floor().walls.len(), 1);
+        assert_eq!(back.floor().ceiling_m, 4.5);
+        assert_eq!(back.floor().image, vec![0, 1, 2, 255]);
+        assert_eq!(back.floor().points[0].observations.len(), 3);
+        assert_eq!(back.floor().metres_per_px, Some(0.05));
     }
 }

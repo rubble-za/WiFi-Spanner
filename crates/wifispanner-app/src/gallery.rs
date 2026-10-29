@@ -35,6 +35,7 @@ pub enum GalleryAction {
 
 #[derive(Clone, Default)]
 struct Summary {
+    floors: usize,
     points: usize,
     aps: usize,
     error: Option<String>,
@@ -142,7 +143,7 @@ impl Gallery {
             .map_err(|e| e.to_string())
             .and_then(|t| Project::from_json(&t).map_err(|e| e.to_string()));
         match project {
-            Ok(p) if p.floor.points.is_empty() => self.status = "Could not create report: the project has no survey points yet".into(),
+            Ok(p) if p.floors.iter().all(|f| f.points.is_empty()) => self.status = "Could not create report: the project has no survey points yet".into(),
             Ok(p) => self.report_dialog = Some(report::OptionsDialog::new(path.to_path_buf(), p)),
             Err(e) => self.status = format!("Could not create report: {e}"),
         }
@@ -385,6 +386,7 @@ fn project_card(ui: &mut egui::Ui, e: &Entry, summary: Option<&Summary>, thumb: 
     painter.galley(rect.min + Vec2::new(12.0 * s, thumb_h + 20.0 * s), painter.layout_job(name), r.on_surface);
     let details = match summary {
         Some(s) if s.error.is_some() => "Could not be read".to_string(),
+        Some(s) if s.floors > 1 => format!("{} floors  ·  {} points  ·  {}", s.floors, s.points, e.modified.map_or("unknown".into(), time_ago)),
         Some(s) => format!("{} points  ·  {}", s.points, e.modified.map_or("unknown".into(), time_ago)),
         None => "Loading...".to_string(),
     };
@@ -450,9 +452,10 @@ fn load_one(path: &Path, modified: Option<SystemTime>) -> Loaded {
     let mut thumb = None;
     match std::fs::read_to_string(path).map_err(|e| e.to_string()).and_then(|t| Project::from_json(&t).map_err(|e| e.to_string())) {
         Ok(p) => {
-            summary.points = p.floor.points.len();
-            summary.aps = p.floor.bssids().len();
-            thumb = make_thumb(&p.floor.image);
+            summary.points = p.floors.iter().map(|f| f.points.len()).sum();
+            summary.aps = p.floors.iter().flat_map(|f| f.bssids()).collect::<std::collections::BTreeSet<_>>().len();
+            summary.floors = p.floors.len();
+            thumb = make_thumb(&p.floor().image);
         }
         Err(e) => summary.error = Some(e),
     }
@@ -509,7 +512,7 @@ mod tests {
             noise_dbm: None,
             observations: vec![Observation { bssid: "a".into(), ssid: None, freq_mhz: 5180, channel: 36, width_mhz: 80, signal_dbm: -50.0, samples: 1 }],
         };
-        let floor = Floor { name: "x".into(), image: png(600, 800), width_px: 600, height_px: 800, metres_per_px: None, points: vec![point], walls: Vec::new(), ceiling_m: 3.0 };
+        let floor = Floor { name: "x".into(), image: png(600, 800), width_px: 600, height_px: 800, metres_per_px: None, points: vec![point], walls: Vec::new(), ceiling_m: 3.0, placement: Default::default() };
         let good = dir.join("good.wifispanner");
         std::fs::write(&good, Project::new(floor).to_json().unwrap()).unwrap();
         let bad = dir.join("bad.wifispanner");

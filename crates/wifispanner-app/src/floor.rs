@@ -4,7 +4,7 @@
 //! The Surveying workspace: import a plan, calibrate its scale, click spots to
 //! scan, and view the measurements as a heatmap.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 
@@ -17,7 +17,7 @@ use wifispanner_scan::{Band, ScanResult};
 
 use crate::settings::Settings;
 use crate::theme::{self, ButtonKind};
-use egui_material_icons::icons::{ICON_ARCHITECTURE, ICON_ARROW_BACK, ICON_HIGHLIGHT_ALT, ICON_DELETE, ICON_DESCRIPTION, ICON_FOLDER_OPEN, ICON_IMAGE, ICON_PLACE, ICON_SAVE, ICON_STRAIGHTEN, ICON_UNDO};
+use egui_material_icons::icons::{ICON_ADD, ICON_ARCHITECTURE, ICON_ARROW_BACK, ICON_OPEN_WITH, ICON_RESTART_ALT, ICON_VISIBILITY, ICON_VISIBILITY_OFF, ICON_HIGHLIGHT_ALT, ICON_DELETE, ICON_DESCRIPTION, ICON_FOLDER_OPEN, ICON_IMAGE, ICON_PLACE, ICON_SAVE, ICON_STRAIGHTEN, ICON_UNDO};
 use crate::{Cmd, pdf, report, store};
 use crate::live::signal_color;
 
@@ -37,6 +37,8 @@ enum Tool {
     Walls,
     /// Pick walls by clicking or dragging a box, then edit them together.
     Select,
+    /// Line up the ghosted overlay floor with the active one by dragging it.
+    Align,
 }
 
 /// Textures are capped at this size per side; positions stay in plan pixels.
@@ -109,6 +111,13 @@ pub struct FloorTab {
     /// Display settings from the settings dialog, copied in each frame.
     view: Settings,
     pdf_picker: Option<PdfPicker>,
+    /// Another floor shown ghosted over the active one, and how strongly.
+    overlay: Option<usize>,
+    overlay_opacity: f32,
+    floor_textures: HashMap<usize, TextureHandle>,
+    /// The next plan that loads becomes a new floor instead of a new project.
+    adding_floor: bool,
+    rename: Option<String>,
     /// Wall drawing: the material and height for the next wall, where the wall
     /// being drawn started, and the wall picked in the list.
     wall_material: Material,
@@ -121,6 +130,19 @@ pub struct FloorTab {
     /// Plan position where a selection box was started.
     box_start: Option<Pos2>,
     report_dialog: Option<report::OptionsDialog>,
+}
+
+/// What the floors palette asked for.
+enum FloorEdit {
+    Activate(usize),
+    ToggleOverlay(usize),
+    Add,
+    Rename,
+    Remove,
+    Align,
+    Rotate(f32),
+    ResetPlacement,
+    Opacity(f32),
 }
 
 /// What the wall palette asked for.
@@ -169,6 +191,11 @@ impl Default for FloorTab {
             back: false,
             view: Settings::default(),
             pdf_picker: None,
+            overlay: None,
+            overlay_opacity: 0.5,
+            floor_textures: HashMap::new(),
+            adding_floor: false,
+            rename: None,
             wall_material: Material::Concrete,
             wall_height: Material::Concrete.default_height_m(),
             wall_start: None,
@@ -186,9 +213,9 @@ impl FloorTab {
         self.pending = None;
         let Some(p) = self.project.as_mut() else { return };
         let point = SurveyPoint::from_scan(x, y, dwell_secs, scan);
-        self.status = format!("Point {} saved: {} APs heard.", p.floor.points.len() + 1, point.observations.len());
-        p.floor.points.push(point);
-        self.selected = Some(p.floor.points.len() - 1);
+        self.status = format!("Point {} saved: {} APs heard.", p.floor().points.len() + 1, point.observations.len());
+        p.floor_mut().points.push(point);
+        self.selected = Some(p.floor().points.len() - 1);
         self.heat_dirty = true;
         self.autosave();
     }
@@ -274,7 +301,19 @@ impl FloorTab {
             Ok(d) => d,
             Err(e) => return self.status = format!("Not a usable image: {e}"),
         };
-        let floor = Floor { name, image: bytes, width_px: w, height_px: h, metres_per_px: None, points: Vec::new(), walls: Vec::new(), ceiling_m: wifispanner_core::walls::DEFAULT_CEILING_M };
+        let floor = Floor { name, image: bytes, width_px: w, height_px: h, metres_per_px: None, points: Vec::new(), walls: Vec::new(), ceiling_m: wifispanner_core::walls::DEFAULT_CEILING_M, placement: Default::default() };
+        if std::mem::take(&mut self.adding_floor)
+            && let Some(p) = self.project.as_mut()
+        {
+            let below = p.active;
+            p.add_floor(floor);
+            self.overlay = Some(below);
+            self.after_floor_change(ctx);
+            self.status = format!("Floor added.{note} Set its scale, then use the floors panel to overlay the floor below and line them up.");
+            self.tool = Tool::Scale;
+            self.autosave();
+            return;
+        }
         let name = floor.name.clone();
         self.set_project(ctx, Project::new(floor), None);
         self.status = format!("Floor plan loaded.{note} Set the scale first: click two points a known distance apart.");
@@ -373,7 +412,7 @@ impl FloorTab {
 
     fn set_project(&mut self, ctx: &egui::Context, project: Project, path: Option<PathBuf>) {
         self.opened = true;
-        self.texture = decode_texture(ctx, &project.floor.image, "floor-plan");
+        self.texture = decode_texture(ctx, &project.floor().image, "floor-plan");
         self.project = Some(project);
         self.path = path;
         self.selected = None;
@@ -384,6 +423,209 @@ impl FloorTab {
         self.tool = Tool::Survey;
         self.target = Target::Any;
         self.band = None;
+    }
+
+    /// Reload everything that follows the active floor.
+    fn after_floor_change(&mut self, ctx: &egui::Context) {
+        self.floor_textures.clear();
+        self.texture = self.project.as_ref().and_then(|p| decode_texture(ctx, &p.floor().image, "floor-plan"));
+        self.selected = None;
+        self.pending = None;
+        self.scale_clicks.clear();
+        self.selected_walls.clear();
+        self.wall_start = None;
+        self.wall_history.clear();
+        self.needs_fit = true;
+        self.heat_dirty = true;
+        let active = self.project.as_ref().map_or(0, |p| p.active);
+        if self.overlay.is_some_and(|o| o == active || self.project.as_ref().is_none_or(|p| o >= p.floors.len())) {
+            self.overlay = None;
+        }
+        if self.overlay.is_none() && self.tool == Tool::Align {
+            self.tool = Tool::Survey;
+        }
+    }
+
+    fn set_active(&mut self, ctx: &egui::Context, i: usize) {
+        if let Some(p) = self.project.as_mut()
+            && i < p.floors.len()
+            && p.active != i
+        {
+            p.active = i;
+            self.after_floor_change(ctx);
+            self.autosave();
+        }
+    }
+
+    /// The overlay floor and its picture, when one is being shown.
+    fn overlay_texture(&mut self, ctx: &egui::Context) -> Option<(usize, TextureHandle)> {
+        let p = self.project.as_ref()?;
+        let o = self.overlay.filter(|&o| o != p.active && o < p.floors.len())?;
+        if !self.floor_textures.contains_key(&o) {
+            let tex = decode_texture(ctx, &p.floors[o].image, &format!("floor-overlay-{o}"))?;
+            self.floor_textures.insert(o, tex);
+        }
+        Some((o, self.floor_textures[&o].clone()))
+    }
+
+    /// Ask for a plan to add as another floor of this project.
+    fn add_floor_pick(&mut self, ctx: &egui::Context) {
+        if let Some(path) = rfd::FileDialog::new().add_filter("Floor plans (PNG, JPG, PDF)", &["png", "jpg", "jpeg", "pdf"]).set_title("Add a floor").pick_file() {
+            self.adding_floor = true;
+            self.load_plan(ctx, &path);
+        }
+    }
+
+    fn apply_floor_edit(&mut self, ctx: &egui::Context, edit: FloorEdit) {
+        match edit {
+            FloorEdit::Activate(i) => self.set_active(ctx, i),
+            FloorEdit::ToggleOverlay(i) => {
+                self.overlay = if self.overlay == Some(i) { None } else { Some(i) };
+                if self.overlay.is_none() && self.tool == Tool::Align {
+                    self.tool = Tool::Survey;
+                }
+            }
+            FloorEdit::Add => self.add_floor_pick(ctx),
+            FloorEdit::Rename => self.rename = self.project.as_ref().map(|p| p.floor().name.clone()),
+            FloorEdit::Remove => {
+                let Some(p) = self.project.as_ref() else { return };
+                let (i, f) = (p.active, p.floor());
+                let ok = rfd::MessageDialog::new()
+                    .set_title("Remove floor?")
+                    .set_description(format!("Remove \"{}\" with its {} survey points and {} walls? This cannot be undone.", f.name, f.points.len(), f.walls.len()))
+                    .set_buttons(rfd::MessageButtons::YesNo)
+                    .show()
+                    == rfd::MessageDialogResult::Yes;
+                if ok && let Some(p) = self.project.as_mut() {
+                    p.remove_floor(i);
+                    self.overlay = None;
+                    self.after_floor_change(ctx);
+                    self.autosave();
+                }
+            }
+            FloorEdit::Align => self.tool = if self.tool == Tool::Align { Tool::Survey } else { Tool::Align },
+            FloorEdit::Rotate(deg) => {
+                if let (Some(o), Some(p)) = (self.overlay, self.project.as_mut()) {
+                    p.rotate_floor(o, deg);
+                    self.autosave();
+                }
+            }
+            FloorEdit::ResetPlacement => {
+                if let (Some(o), Some(p)) = (self.overlay, self.project.as_mut()) {
+                    p.floors[o].placement = Default::default();
+                    self.autosave();
+                }
+            }
+            FloorEdit::Opacity(a) => self.overlay_opacity = a,
+        }
+    }
+
+    /// The floors panel floating over the left of the plan: switch floor, add
+    /// one, and overlay another to line them up.
+    fn floors_bubble(&self, ctx: &egui::Context, canvas: Rect) -> Vec<FloorEdit> {
+        let r = theme::roles(ctx);
+        let Some(p) = self.project.as_ref() else { return Vec::new() };
+        let mut edits = Vec::new();
+        egui::Area::new(egui::Id::unique("floors_bubble"))
+            .order(egui::Order::Foreground)
+            .pivot(egui::Align2::LEFT_TOP)
+            .fixed_pos(canvas.left_top() + Vec2::new(12.0, 12.0))
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(r.surface_container_high)
+                    .stroke(Stroke::new(1.0, r.outline_variant))
+                    .corner_radius(20)
+                    .inner_margin(14)
+                    .shadow(theme::shadow(r.shadow, 16, 0.18))
+                    .show(ui, |ui| {
+                        ui.set_width(210.0);
+                        ui.label(egui::RichText::new("Floors").size(15.0).color(r.on_surface_variant));
+                        ui.add_space(4.0);
+                        // Highest floor first, like the building.
+                        for (i, fl) in p.floors.iter().enumerate().rev() {
+                            ui.horizontal(|ui| {
+                                if i == p.active {
+                                    ui.add_space(26.0);
+                                } else {
+                                    let shown = self.overlay == Some(i);
+                                    let icon = if shown { ICON_VISIBILITY } else { ICON_VISIBILITY_OFF };
+                                    let text = egui::RichText::new(icon.codepoint).font(egui::FontId::new(18.0, icon.font_family()));
+                                    if ui.add(egui::Button::new(text).frame(false)).on_hover_text("Overlay this floor, ghosted, over the active one").clicked() {
+                                        edits.push(FloorEdit::ToggleOverlay(i));
+                                    }
+                                }
+                                if ui.add_sized([150.0, 26.0], egui::Button::selectable(i == p.active, &fl.name).frame_when_inactive(false)).clicked() {
+                                    edits.push(FloorEdit::Activate(i));
+                                }
+                            });
+                        }
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            if theme::button(ui, ButtonKind::Tonal, Some(ICON_ADD), "Add floor").clicked() {
+                                edits.push(FloorEdit::Add);
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            if theme::button(ui, ButtonKind::Text, None, "Rename").clicked() {
+                                edits.push(FloorEdit::Rename);
+                            }
+                            if ui.add_enabled_ui(p.floors.len() > 1, |ui| theme::button(ui, ButtonKind::Text, None, "Remove")).inner.clicked() {
+                                edits.push(FloorEdit::Remove);
+                            }
+                        });
+                        if let Some(o) = self.overlay.filter(|&o| o != p.active && o < p.floors.len()) {
+                            ui.separator();
+                            ui.label(egui::RichText::new(format!("Overlay: {}", p.floors[o].name)).size(13.0));
+                            let mut a = self.overlay_opacity;
+                            ui.spacing_mut().slider_width = 130.0;
+                            if ui.add(egui::Slider::new(&mut a, 0.1..=1.0).text("Opacity")).changed() {
+                                edits.push(FloorEdit::Opacity(a));
+                            }
+                            if theme::chip(ui, self.tool == Tool::Align, Some(ICON_OPEN_WITH), "Align").clicked() {
+                                edits.push(FloorEdit::Align);
+                            }
+                            if self.tool == Tool::Align {
+                                ui.label(egui::RichText::new("Drag the ghost floor to line it up with this one. Pan with the right mouse button.").size(12.5).color(r.on_surface_variant));
+                                let mut deg = p.floors[o].placement.rotation_deg;
+                                ui.horizontal(|ui| {
+                                    ui.label("Rotate");
+                                    if ui.add(egui::DragValue::new(&mut deg).range(-180.0..=180.0).speed(0.1).suffix(" deg").fixed_decimals(1)).changed() {
+                                        edits.push(FloorEdit::Rotate(deg));
+                                    }
+                                });
+                                if theme::button(ui, ButtonKind::Text, Some(ICON_RESTART_ALT), "Reset").clicked() {
+                                    edits.push(FloorEdit::ResetPlacement);
+                                }
+                            }
+                        }
+                    });
+            });
+        edits
+    }
+
+    fn rename_dialog(&mut self, ctx: &egui::Context) {
+        let Some(name) = self.rename.as_mut() else { return };
+        let (mut ok, mut cancel) = (false, false);
+        theme::dialog(ctx, "Rename floor", 360.0, |ui| {
+            let edit = ui.add(egui::TextEdit::singleline(name).desired_width(f32::INFINITY));
+            edit.request_focus();
+            let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            theme::actions(ui, |ui| {
+                ok = theme::button(ui, ButtonKind::Filled, None, "Rename").clicked() || enter;
+                cancel = theme::button(ui, ButtonKind::Text, None, "Cancel").clicked();
+            });
+        });
+        if ok {
+            let new = self.rename.take().unwrap_or_default();
+            if !new.trim().is_empty()
+                && let Some(p) = self.project.as_mut()
+            {
+                p.floor_mut().name = new.trim().to_string();
+                self.autosave();
+            }
+        } else if cancel {
+            self.rename = None;
+        }
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, env: &Env) {
@@ -405,7 +647,7 @@ impl FloorTab {
 
     /// The plan's scale, for the status bar: how it is set, or why it looks wrong.
     pub fn scale_label(&self, ui: &mut egui::Ui) {
-        let Some(f) = self.project.as_ref().map(|p| &p.floor) else { return };
+        let Some(f) = self.project.as_ref().map(|p| p.floor()) else { return };
         let error = theme::roles(ui.ctx()).error;
         let (text, colour, hover) = match f.metres_per_px {
             Some(m) if !heatmap::scale_is_plausible(m, f.width_px, f.height_px) => (
@@ -434,6 +676,7 @@ impl FloorTab {
         self.scale_dialog(ctx);
         self.pdf_dialog(ctx);
         self.report_dialog(ctx);
+        self.rename_dialog(ctx);
     }
 
     /// Ask for a floor plan file (PNG, JPG or PDF) and load it.
@@ -485,7 +728,7 @@ impl FloorTab {
                 if theme::button(ui, ButtonKind::Text, None, "Save as...").clicked() {
                     self.save_as();
                 }
-                let has_points = self.project.as_ref().is_some_and(|p| !p.floor.points.is_empty());
+                let has_points = self.project.as_ref().is_some_and(|p| !p.floor().points.is_empty());
                 let report = ui.add_enabled_ui(has_points, |ui| theme::button(ui, ButtonKind::Filled, Some(ICON_DESCRIPTION), "Generate report")).inner;
                 if report.clicked() {
                     self.make_report();
@@ -500,19 +743,16 @@ impl FloorTab {
                     self.tool = Tool::Scale;
                     self.scale_clicks.clear();
                 }
-                if theme::chip(ui, self.tool == Tool::Walls, Some(ICON_ARCHITECTURE), "Draw walls").clicked() {
+                // One chip for both wall tools; the palette over the plan switches between them.
+                if theme::chip(ui, matches!(self.tool, Tool::Walls | Tool::Select), Some(ICON_ARCHITECTURE), "Walls").clicked() {
                     self.tool = Tool::Walls;
                     self.wall_start = None;
                     self.selected_walls.clear();
                 }
-                if theme::chip(ui, self.tool == Tool::Select, Some(ICON_HIGHLIGHT_ALT), "Select walls").clicked() {
-                    self.tool = Tool::Select;
-                    self.wall_start = None;
-                }
             });
         });
 
-        let Some(floor) = self.project.as_ref().map(|p| &p.floor) else { return };
+        let Some(floor) = self.project.as_ref().map(|p| p.floor()) else { return };
         ui.horizontal_wrapped(|ui| {
             let mut changed = theme::switch_row(ui, &mut self.show_heat, "Heatmap").changed();
             ui.add_enabled_ui(self.show_heat, |ui| {
@@ -561,7 +801,7 @@ impl FloorTab {
         if streaming && recent {
             return;
         }
-        self.wall_history.push(p.floor.walls.clone());
+        self.wall_history.push(p.floor().walls.clone());
         if self.wall_history.len() > WALL_HISTORY {
             self.wall_history.remove(0);
         }
@@ -569,7 +809,7 @@ impl FloorTab {
 
     fn undo_walls(&mut self) {
         if let (Some(walls), Some(p)) = (self.wall_history.pop(), self.project.as_mut()) {
-            p.floor.walls = walls;
+            p.floor_mut().walls = walls;
             self.selected_walls.clear();
             self.wall_start = None;
             self.autosave();
@@ -584,7 +824,7 @@ impl FloorTab {
         let selected = std::mem::take(&mut self.selected_walls);
         if let Some(p) = self.project.as_mut() {
             let mut i = 0;
-            p.floor.walls.retain(|_| {
+            p.floor_mut().walls.retain(|_| {
                 i += 1;
                 !selected.contains(&(i - 1))
             });
@@ -607,8 +847,8 @@ impl FloorTab {
             WallEdit::Ceiling(c) => {
                 self.remember_walls(true);
                 if let Some(p) = self.project.as_mut() {
-                    p.floor.ceiling_m = c;
-                    for w in &mut p.floor.walls {
+                    p.floor_mut().ceiling_m = c;
+                    for w in &mut p.floor_mut().walls {
                         if let Some(h) = &mut w.height_m {
                             *h = h.min(c);
                         }
@@ -624,7 +864,7 @@ impl FloorTab {
                     let selected = self.selected_walls.clone();
                     if let Some(p) = self.project.as_mut() {
                         for i in selected {
-                            if let Some(w) = p.floor.walls.get_mut(i) {
+                            if let Some(w) = p.floor_mut().walls.get_mut(i) {
                                 w.material = m;
                                 w.height_m = m.default_height_m();
                             }
@@ -639,7 +879,7 @@ impl FloorTab {
                     let selected = self.selected_walls.clone();
                     if let Some(p) = self.project.as_mut() {
                         for i in selected {
-                            if let Some(w) = p.floor.walls.get_mut(i) {
+                            if let Some(w) = p.floor_mut().walls.get_mut(i) {
                                 w.height_m = h;
                             }
                         }
@@ -656,7 +896,7 @@ impl FloorTab {
     /// height and the edit actions. Returns what was asked for.
     fn wall_bubble(&self, ctx: &egui::Context, canvas: Rect) -> Vec<WallEdit> {
         let r = theme::roles(ctx);
-        let Some(floor) = self.project.as_ref().map(|p| &p.floor) else { return Vec::new() };
+        let Some(floor) = self.project.as_ref().map(|p| p.floor()) else { return Vec::new() };
         let selecting = self.tool == Tool::Select;
         let picked: Vec<&Wall> = self.selected_walls.iter().filter_map(|&i| floor.walls.get(i)).collect();
         // What the controls show: the selection when selecting, else the next wall.
@@ -763,7 +1003,7 @@ impl FloorTab {
 
     /// Where a wall point at `plan` lands once snapped.
     fn snapped(&self, plan: Pos2, zoom: f32) -> Pos2 {
-        let walls = self.project.as_ref().map_or(&[][..], |p| &p.floor.walls[..]);
+        let walls = self.project.as_ref().map_or(&[][..], |p| &p.floor().walls[..]);
         let s = walls::snap([plan.x, plan.y], self.wall_start.map(|p| [p.x, p.y]), walls, WALL_SNAP_PX / zoom);
         Pos2::new(s[0], s[1])
     }
@@ -785,8 +1025,8 @@ impl FloorTab {
         wall.height_m = self.wall_height;
         if let Some(p) = self.project.as_mut() {
             let tol = WALL_CARVE_PX / zoom;
-            p.floor.walls = p.floor.walls.iter().flat_map(|w| w.carve(&wall, tol)).collect();
-            p.floor.walls.push(wall);
+            p.floor_mut().walls = p.floor().walls.iter().flat_map(|w| w.carve(&wall, tol)).collect();
+            p.floor_mut().walls.push(wall);
         }
         self.wall_start = None;
         self.autosave();
@@ -795,7 +1035,7 @@ impl FloorTab {
     /// Select by clicking a wall or dragging a box; Shift or Ctrl adds.
     fn select_walls(&mut self, resp: &egui::Response, ui: &egui::Ui, zoom: f32, to_plan: &impl Fn(Pos2) -> Pos2) {
         let additive = ui.input(|i| i.modifiers.shift || i.modifiers.command);
-        let Some(floor) = self.project.as_ref().map(|p| &p.floor) else { return };
+        let Some(floor) = self.project.as_ref().map(|p| p.floor()) else { return };
         if resp.drag_started_by(egui::PointerButton::Primary) {
             self.box_start = ui.input(|i| i.pointer.press_origin()).map(to_plan);
         }
@@ -865,7 +1105,7 @@ impl FloorTab {
     }
 
     fn save_as(&mut self) {
-        let name = self.project.as_ref().map_or("survey".into(), |p| p.floor.name.clone());
+        let name = self.project.as_ref().map_or("survey".into(), |p| p.floor().name.clone());
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("WiFi Spanner project", &[store::EXTENSION])
             .set_directory(store::projects_dir())
@@ -881,7 +1121,7 @@ impl FloorTab {
 
     /// Ask before replacing a project that has measurements and no save file.
     fn confirm_discard(&self) -> bool {
-        let unsaved = self.path.is_none() && self.project.as_ref().is_some_and(|p| !p.floor.points.is_empty());
+        let unsaved = self.path.is_none() && self.project.as_ref().is_some_and(|p| !p.floor().points.is_empty());
         !unsaved
             || rfd::MessageDialog::new()
                 .set_title("Discard survey?")
@@ -893,7 +1133,7 @@ impl FloorTab {
 
     fn side_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading("Survey points");
-        let Some(floor) = self.project.as_mut().map(|p| &mut p.floor) else {
+        let Some(floor) = self.project.as_mut().map(|p| p.floor_mut()) else {
             ui.label("No floor plan loaded.");
             return;
         };
@@ -947,6 +1187,7 @@ impl FloorTab {
     }
 
     fn canvas(&mut self, ui: &mut egui::Ui, env: &Env) {
+        let overlay_tex = self.overlay_texture(ui.ctx());
         let (Some(project), Some(tex)) = (self.project.as_ref(), self.texture.clone()) else {
             let ctx = ui.ctx().clone();
             theme::empty_state(ui, ICON_IMAGE, "No floor plan yet", "Open a floor plan or a saved project to start surveying.", |ui| {
@@ -960,7 +1201,7 @@ impl FloorTab {
             });
             return;
         };
-        let (img_w, img_h) = (project.floor.width_px as f32, project.floor.height_px as f32);
+        let (img_w, img_h) = (project.floor().width_px as f32, project.floor().height_px as f32);
         let (rect, resp) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
 
         if self.needs_fit && rect.width() > 1.0 {
@@ -970,13 +1211,24 @@ impl FloorTab {
         }
         // Selecting by box uses the primary drag, so the plan pans with the
         // middle or right button then.
-        let panning = if self.tool == Tool::Select {
+        let panning = if matches!(self.tool, Tool::Select | Tool::Align) {
             resp.dragged_by(egui::PointerButton::Middle) || resp.dragged_by(egui::PointerButton::Secondary)
         } else {
             resp.dragged()
         };
         if panning {
             self.offset += resp.drag_delta();
+        }
+        if self.tool == Tool::Align
+            && resp.dragged_by(egui::PointerButton::Primary)
+            && let (Some((o, _)), Some(p)) = (&overlay_tex, self.project.as_mut())
+        {
+            let d = resp.drag_delta() / self.zoom;
+            let active = p.active;
+            p.nudge_overlay(*o, active, [d.x, d.y]);
+        }
+        if self.tool == Tool::Align && resp.drag_stopped_by(egui::PointerButton::Primary) {
+            self.autosave();
         }
         if let Some(cursor) = resp.hover_pos() {
             let factor = ui.input(|i| (i.smooth_scroll_delta.y * 0.0015).exp() * i.zoom_delta());
@@ -1008,7 +1260,7 @@ impl FloorTab {
                 if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::A))
                     && let Some(p) = &self.project
                 {
-                    self.selected_walls = (0..p.floor.walls.len()).collect();
+                    self.selected_walls = (0..p.floor().walls.len()).collect();
                 }
             }
             if ui.input(|i| i.key_pressed(egui::Key::Delete)) {
@@ -1036,13 +1288,41 @@ impl FloorTab {
         } else {
             painter.rect_filled(plan_rect, 0.0, ui.visuals().faint_bg_color);
         }
+        if let (Some((o, otex)), Some(p)) = (&overlay_tex, self.project.as_ref()) {
+            let t = p.overlay_transform(*o, p.active);
+            let fl = &p.floors[*o];
+            let corners = [[0.0, 0.0], [fl.width_px as f32, 0.0], [fl.width_px as f32, fl.height_px as f32], [0.0, fl.height_px as f32]].map(|c| {
+                let q = t.apply(c);
+                to_screen(Pos2::new(q[0], q[1]))
+            });
+            let tint = Color32::from_rgba_unmultiplied(255, 190, 140, (self.overlay_opacity * 255.0) as u8);
+            let mut mesh = egui::Mesh::with_texture(otex.id());
+            for (pos, uv) in corners.iter().zip([Pos2::new(0.0, 0.0), Pos2::new(1.0, 0.0), Pos2::new(1.0, 1.0), Pos2::new(0.0, 1.0)]) {
+                mesh.vertices.push(egui::epaint::Vertex { pos: *pos, uv, color: tint });
+            }
+            mesh.indices.extend([0, 1, 2, 0, 2, 3]);
+            painter.add(egui::Shape::mesh(mesh));
+            painter.add(egui::Shape::closed_line(corners.to_vec(), Stroke::new(1.5, Color32::from_rgb(240, 140, 50).gamma_multiply(0.8))));
+            for w in &fl.walls {
+                let ([r, g, b], width) = w.material.style();
+                let (a, c) = (t.apply(w.a), t.apply(w.b));
+                painter.line_segment(
+                    [to_screen(Pos2::new(a[0], a[1])), to_screen(Pos2::new(c[0], c[1]))],
+                    Stroke::new(width * 0.8, Color32::from_rgb(r, g, b).gamma_multiply(self.overlay_opacity.max(0.4))),
+                );
+            }
+            for sp in &fl.points {
+                let q = t.apply([sp.x, sp.y]);
+                painter.circle_stroke(to_screen(Pos2::new(q[0], q[1])), 5.0, Stroke::new(1.5, Color32::from_rgb(240, 140, 50)));
+            }
+        }
         if self.show_heat
             && let Some(heat) = &self.heat_texture
         {
             painter.image(heat.id(), plan_rect, uv, Color32::from_white_alpha((self.opacity * 255.0) as u8));
         }
 
-        let floor = &self.project.as_ref().expect("checked above").floor;
+        let floor = self.project.as_ref().expect("checked above").floor();
         let ceiling = floor.ceiling_m;
         for (i, w) in floor.walls.iter().enumerate() {
             let ([r, g, b], width) = w.material.style();
@@ -1122,15 +1402,18 @@ impl FloorTab {
                 self.apply_wall_edit(edit);
             }
         }
+        for edit in self.floors_bubble(ui.ctx(), rect) {
+            self.apply_floor_edit(ui.ctx(), edit);
+        }
     }
 
     fn handle_click(&mut self, click: Pos2, plan: Pos2, to_screen: &impl Fn(Pos2) -> Pos2, env: &Env) {
-        let Some(floor) = self.project.as_ref().map(|p| &p.floor) else { return };
+        let Some(floor) = self.project.as_ref().map(|p| p.floor()) else { return };
         if plan.x < 0.0 || plan.y < 0.0 || plan.x > floor.width_px as f32 || plan.y > floor.height_px as f32 {
             return;
         }
         match self.tool {
-            Tool::Walls | Tool::Select => {}
+            Tool::Walls | Tool::Select | Tool::Align => {}
             Tool::Scale => {
                 if self.scale_clicks.len() >= 2 {
                     self.scale_clicks.clear();
@@ -1166,7 +1449,7 @@ impl FloorTab {
             return;
         }
         let (a, b) = (self.scale_clicks[0], self.scale_clicks[1]);
-        let (w, h) = self.project.as_ref().map_or((1, 1), |p| (p.floor.width_px, p.floor.height_px));
+        let (w, h) = self.project.as_ref().map_or((1, 1), |p| (p.floor().width_px, p.floor().height_px));
         let mut done = false;
         theme::dialog(ctx, "Set scale", 380.0, |ui| {
             ui.label(format!("The two points are {:.0} px apart. What is that distance in metres?", a.distance(b)));
@@ -1189,7 +1472,7 @@ impl FloorTab {
                 let set = ui.add_enabled_ui(scale.is_some(), |ui| theme::button(ui, ButtonKind::Filled, None, "Set scale")).inner;
                 let ok = set.clicked() || (edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && scale.is_some());
                 if ok && let (Some(mpp), Some(p)) = (scale, self.project.as_mut()) {
-                    p.floor.metres_per_px = Some(mpp);
+                    p.floor_mut().metres_per_px = Some(mpp);
                     self.status = "Scale set. Switch to \"Survey point\" and click where you are standing.".into();
                     self.tool = Tool::Survey;
                     self.heat_dirty = true;
@@ -1208,7 +1491,7 @@ impl FloorTab {
 
     fn rebuild_heat(&mut self, ctx: &egui::Context) {
         self.heat_dirty = false;
-        let Some(floor) = self.project.as_ref().map(|p| &p.floor) else { return };
+        let Some(floor) = self.project.as_ref().map(|p| p.floor()) else { return };
         let samples: Vec<Sample> = floor
             .points
             .iter()

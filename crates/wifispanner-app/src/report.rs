@@ -81,6 +81,8 @@ impl ReportStyle {
 pub struct ReportOptions {
     /// Networks that get a coverage map of their own.
     pub ssids: BTreeSet<String>,
+    /// The floor the report is about.
+    pub floor: usize,
 }
 
 /// Build the report for `project` and write it to the project's reports
@@ -117,6 +119,7 @@ pub struct OptionsDialog {
     project: Project,
     networks: Vec<(String, usize)>,
     chosen: BTreeSet<String>,
+    floor: usize,
 }
 
 /// What the user did in the dialog.
@@ -128,8 +131,10 @@ pub enum DialogResult {
 
 impl OptionsDialog {
     pub fn new(path: PathBuf, project: Project) -> Self {
-        let networks = networks_heard(&project.floor);
-        OptionsDialog { path, project, networks, chosen: BTreeSet::new() }
+        // Start with the active floor, or the first one that has measurements.
+        let floor = if project.floor().points.is_empty() { project.floors.iter().position(|f| !f.points.is_empty()).unwrap_or(project.active) } else { project.active };
+        let networks = networks_heard(&project.floors[floor]);
+        OptionsDialog { path, project, networks, chosen: BTreeSet::new(), floor }
     }
 
     pub fn path(&self) -> &Path {
@@ -145,6 +150,20 @@ impl OptionsDialog {
         let mut result = DialogResult::Open;
         theme::dialog(ctx, "Generate report", 460.0, |ui| {
             ui.label("Every report has the survey path, access point positions and, for each band, maps of coverage, signal-to-noise and interference. Tick networks to add a coverage map for each.");
+            if self.project.floors.len() > 1 {
+                ui.add_space(8.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Floor");
+                    for (i, f) in self.project.floors.iter().enumerate() {
+                        let label = format!("{} ({} points)", f.name, f.points.len());
+                        if theme::chip(ui, self.floor == i, None, &label).clicked() && self.floor != i {
+                            self.floor = i;
+                            self.networks = networks_heard(f);
+                            self.chosen.clear();
+                        }
+                    }
+                });
+            }
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if theme::button(ui, ButtonKind::Text, None, "All").clicked() {
@@ -158,7 +177,7 @@ impl OptionsDialog {
                 if self.networks.is_empty() {
                     ui.label("No named networks were heard.");
                 }
-                let total = self.project.floor.points.len();
+                let total = self.project.floors[self.floor].points.len();
                 for (ssid, heard) in &self.networks {
                     let mut on = self.chosen.contains(ssid);
                     if ui.checkbox(&mut on, format!("{ssid}   (heard at {heard} of {total} points)")).changed() {
@@ -173,7 +192,7 @@ impl OptionsDialog {
             ui.add_space(12.0);
             theme::actions(ui, |ui| {
                 if theme::button(ui, ButtonKind::Filled, None, "Generate").clicked() {
-                    result = DialogResult::Generate(ReportOptions { ssids: self.chosen.clone() });
+                    result = DialogResult::Generate(ReportOptions { ssids: self.chosen.clone(), floor: self.floor });
                 }
                 if theme::button(ui, ButtonKind::Text, None, "Cancel").clicked() {
                     result = DialogResult::Cancel;
@@ -533,7 +552,7 @@ fn summary_row(floor: &Floor, v: &View, grid: &Grid, id: &str) -> String {
 }
 
 pub fn build_html(project: &Project, generated: &str, style: &ReportStyle, opts: &ReportOptions) -> Result<String, String> {
-    let floor = &project.floor;
+    let floor = &project.floors[opts.floor.min(project.floors.len() - 1)];
     if floor.points.is_empty() {
         return Err("the project has no survey points yet".into());
     }
@@ -810,7 +829,7 @@ mod tests {
     fn project(points: Vec<SurveyPoint>) -> Project {
         let mut png = Vec::new();
         image::RgbaImage::new(40, 20).write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
-        Project::new(Floor { name: "Test <plan>".into(), image: png, width_px: 40, height_px: 20, metres_per_px: Some(0.5), points, walls: Vec::new(), ceiling_m: 3.0 })
+        Project::new(Floor { name: "Test <plan>".into(), image: png, width_px: 40, height_px: 20, metres_per_px: Some(0.5), points, walls: Vec::new(), ceiling_m: 3.0, placement: Default::default() })
     }
 
     fn html(p: &Project) -> String {
@@ -818,7 +837,7 @@ mod tests {
     }
 
     fn with_ssid(ssid: &str) -> ReportOptions {
-        ReportOptions { ssids: [ssid.to_string()].into() }
+        ReportOptions { ssids: [ssid.to_string()].into(), ..Default::default() }
     }
 
     #[test]
@@ -844,7 +863,7 @@ mod tests {
     #[test]
     fn the_dialog_lists_networks_by_how_widely_they_were_heard() {
         let p = project(vec![point(5.0, "Few", -50.0), point(6.0, "Many", -50.0), point(7.0, "Many", -60.0)]);
-        let nets = networks_heard(&p.floor);
+        let nets = networks_heard(p.floor());
         assert_eq!(nets, vec![("Many".to_string(), 2), ("Few".to_string(), 1)]);
     }
 
@@ -889,7 +908,7 @@ mod tests {
         let none_measured = html(&project(vec![point(5.0, "Mine", -60.0)]));
         assert!(none_measured.contains("did not report a noise floor"));
         let mut measured = project(vec![point(5.0, "Mine", -60.0)]);
-        measured.floor.points[0].noise_dbm = Some(-92.0);
+        measured.floor_mut().points[0].noise_dbm = Some(-92.0);
         assert!(html(&measured).contains("measured by the adapter"));
     }
 
@@ -910,22 +929,37 @@ mod tests {
             at(5.0, vec![obs("aa:00:00:00:00:01", "A", 5180, -45.0)]),
             at(30.0, vec![obs("aa:00:00:00:00:01", "A", 5180, -70.0)]),
         ]);
-        let aps = place_aps(&p.floor, Band::Ghz5);
+        let aps = place_aps(p.floor(), Band::Ghz5);
         assert_eq!(aps.len(), 1);
         assert!(aps[0].x < 10.0, "pulled towards the loud point, got {}", aps[0].x);
         let faint = project(vec![at(5.0, vec![obs("aa:00:00:00:00:01", "A", 5180, -85.0)])]);
-        assert!(place_aps(&faint.floor, Band::Ghz5).is_empty(), "a distant neighbour is not placed");
+        assert!(place_aps(faint.floor(), Band::Ghz5).is_empty(), "a distant neighbour is not placed");
     }
 
     #[test]
     fn drawn_walls_appear_on_every_map_and_low_ones_are_dashed() {
         let mut p = project(vec![point(5.0, "Mine", -50.0)]);
-        p.floor.walls.push(wifispanner_core::walls::Wall::new([1.0, 1.0], [30.0, 1.0], wifispanner_core::Material::Concrete));
-        p.floor.walls.push(wifispanner_core::walls::Wall::new([1.0, 5.0], [30.0, 5.0], wifispanner_core::Material::Metal));
+        p.floor_mut().walls.push(wifispanner_core::walls::Wall::new([1.0, 1.0], [30.0, 1.0], wifispanner_core::Material::Concrete));
+        p.floor_mut().walls.push(wifispanner_core::walls::Wall::new([1.0, 5.0], [30.0, 5.0], wifispanner_core::Material::Metal));
         let out = html(&p);
         let figures = out.matches("<section class=\"fig\"").count();
         assert_eq!(out.matches("<line ").count(), 2 * figures);
         assert_eq!(out.matches("stroke-linecap=\"round\" stroke-dasharray").count(), figures, "only the shelf is lower than the ceiling");
+    }
+
+    #[test]
+    fn a_report_is_about_the_chosen_floor() {
+        let mut p = project(vec![point(5.0, "Ground", -50.0)]);
+        let mut upper = p.floor().clone();
+        upper.name = "Upper".into();
+        upper.points = vec![point(5.0, "Roof", -50.0)];
+        p.add_floor(upper);
+        let ground = build_html(&p, "now", &ReportStyle::default(), &ReportOptions { floor: 0, ..Default::default() }).unwrap();
+        let roof = build_html(&p, "now", &ReportStyle::default(), &ReportOptions { floor: 1, ..Default::default() }).unwrap();
+        assert!(ground.contains("SSIDs: Ground") && !ground.contains("Roof"));
+        assert!(roof.contains("SSIDs: Roof") && roof.contains("<h1>Upper</h1>"));
+        let dialog = OptionsDialog::new(std::path::PathBuf::new(), p);
+        assert_eq!(dialog.floor, 1, "the active floor is offered first");
     }
 
     #[test]
@@ -936,9 +970,9 @@ mod tests {
     #[test]
     fn report_embeds_the_projects_own_floor_plan_bytes() {
         let mut p = project(vec![point(5.0, "Mine", -50.0)]);
-        p.floor.image = (0..=255u8).chain(0..=255u8).collect();
+        p.floor_mut().image = (0..=255u8).chain(0..=255u8).collect();
         let out = html(&p);
-        assert!(out.contains(&B64.encode(&p.floor.image)));
+        assert!(out.contains(&B64.encode(&p.floor().image)));
         assert_eq!(out.matches("id=\"plan\"").count(), 1, "the plan is embedded once and reused");
     }
 
@@ -959,9 +993,9 @@ mod tests {
     #[test]
     fn the_detection_level_drops_weak_readings_from_the_heatmaps() {
         let p = project(vec![point(5.0, "Faint", -85.0), point(30.0, "Faint", -88.0)]);
-        assert!(!coverage_views(&p.floor, &ReportStyle::default(), &ReportOptions::default()).is_empty());
+        assert!(!coverage_views(p.floor(), &ReportStyle::default(), &ReportOptions::default()).is_empty());
         let strict = ReportStyle { detect_dbm: -70.0, ..ReportStyle::default() };
-        assert!(coverage_views(&p.floor, &strict, &ReportOptions::default()).is_empty(), "nothing is strong enough to count");
+        assert!(coverage_views(p.floor(), &strict, &ReportOptions::default()).is_empty(), "nothing is strong enough to count");
         let out = build_html(&p, "now", &strict, &ReportOptions::default()).unwrap();
         assert!(out.contains("treated as not heard") && out.contains("No network was heard at or above the detection level"));
         // The raw data tables still list everything that was seen.
