@@ -16,8 +16,9 @@ pub fn show(ui: &mut egui::Ui, latest: Option<&ScanResult>) {
 
     egui::ScrollArea::both().show(ui, |ui| {
         egui::Grid::new("networks").striped(true).num_columns(10).spacing([16.0, 4.0]).show(ui, |ui| {
+            let header = crate::theme::roles(ui.ctx()).on_surface_variant;
             for h in ["SSID", "BSSID", "Ch", "Band", "Width", "Standard", "Security", "Signal", "Seen", "Util"] {
-                ui.strong(h);
+                ui.label(crate::theme::medium(h).color(header));
             }
             ui.end_row();
             for n in nets {

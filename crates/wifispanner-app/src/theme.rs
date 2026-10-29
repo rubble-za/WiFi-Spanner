@@ -248,6 +248,175 @@ fn shadow(color: Color32, blur: u8, alpha: f32) -> egui::Shadow {
     }
 }
 
+/// Medium-weight text, for headers and labels that need emphasis.
+pub fn medium(text: impl Into<String>) -> egui::RichText {
+    egui::RichText::new(text).family(FontFamily::Name(MEDIUM.into()))
+}
+
+/// Material button kinds: filled for the main action, tonal for secondary
+/// ones, outlined for lower emphasis, text for the least (cancel, dismiss).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ButtonKind {
+    Filled,
+    Tonal,
+    Outlined,
+    Text,
+}
+
+/// A pill-shaped Material button, optionally with a leading icon. Greys out
+/// when the `Ui` is disabled (wrap in `add_enabled_ui`).
+pub fn button(ui: &mut egui::Ui, kind: ButtonKind, icon: Option<egui_material_icons::MaterialIcon>, label: &str) -> egui::Response {
+    let r = roles(ui.ctx());
+    ui.scope(|ui| {
+        let v = ui.visuals_mut();
+        let (fill, fg, outline) = match kind {
+            ButtonKind::Filled => (r.primary, r.on_primary, None),
+            ButtonKind::Tonal => (r.secondary_container, r.on_secondary_container, None),
+            ButtonKind::Outlined => (Color32::TRANSPARENT, r.primary, Some(r.outline)),
+            ButtonKind::Text => (Color32::TRANSPARENT, r.primary, None),
+        };
+        let layer = |opacity: f32| match kind {
+            ButtonKind::Filled | ButtonKind::Tonal => state_layer(fill, fg, opacity),
+            ButtonKind::Outlined | ButtonKind::Text => r.primary.gamma_multiply(opacity),
+        };
+        let stroke = outline.map_or(Stroke::NONE, |c| Stroke::new(1.0, c));
+        for (w, fill) in [(&mut v.widgets.inactive, fill), (&mut v.widgets.hovered, layer(0.08)), (&mut v.widgets.active, layer(0.12))] {
+            w.weak_bg_fill = fill;
+            w.bg_fill = fill;
+            w.bg_stroke = stroke;
+            w.fg_stroke = Stroke::new(1.0, fg);
+            w.expansion = 0.0;
+        }
+        let font = TextStyle::Button.resolve(ui.style());
+        let mut job = egui::text::LayoutJob::default();
+        if let Some(icon) = icon {
+            job.append(icon.codepoint, 0.0, egui::TextFormat::simple(FontId::new(20.0, icon.font_family()), fg));
+            job.append(label, 8.0, egui::TextFormat::simple(font, fg));
+        } else {
+            job.append(label, 0.0, egui::TextFormat::simple(font, fg));
+        }
+        ui.add(egui::Button::new(job).corner_radius(20).min_size(egui::vec2(64.0, 40.0)).wrap_mode(egui::TextWrapMode::Extend))
+    })
+    .inner
+}
+
+/// A Material switch (52 x 32 track, thumb that grows when on).
+pub fn switch(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
+    let r = roles(ui.ctx());
+    let (rect, mut resp) = ui.allocate_exact_size(egui::vec2(52.0, 32.0), egui::Sense::click());
+    if resp.clicked() {
+        *on = !*on;
+        resp.mark_changed();
+    }
+    let t = ui.ctx().animate_bool_responsive(resp.id, *on);
+    let fade = if ui.is_enabled() { 1.0 } else { 0.38 };
+    let lerp = |a: Color32, b: Color32| a.lerp_to_gamma(b, t).gamma_multiply(fade);
+    let painter = ui.painter();
+    painter.rect_filled(rect, 16.0, lerp(r.surface_container_highest, r.primary));
+    if t < 1.0 {
+        painter.rect_stroke(rect, 16.0, Stroke::new(2.0 * (1.0 - t), r.outline.gamma_multiply(fade)), egui::StrokeKind::Inside);
+    }
+    let pressed = resp.is_pointer_button_down_on();
+    let radius = egui::lerp(8.0..=12.0, t) + if pressed { 2.0 } else { 0.0 };
+    let x = egui::lerp((rect.left() + 16.0)..=(rect.right() - 16.0), t);
+    let centre = egui::pos2(x, rect.center().y);
+    if resp.hovered() || pressed {
+        painter.circle_filled(centre, 20.0, lerp(r.on_surface, r.primary).gamma_multiply(if pressed { 0.12 } else { 0.08 }));
+    }
+    painter.circle_filled(centre, radius, lerp(r.outline, r.on_primary));
+    resp
+}
+
+/// A switch with its label beside it; clicking the label toggles too.
+pub fn switch_row(ui: &mut egui::Ui, on: &mut bool, label: &str) -> egui::Response {
+    ui.horizontal(|ui| {
+        let mut resp = switch(ui, on);
+        let text = ui.add(egui::Label::new(label).sense(egui::Sense::click()));
+        if text.clicked() {
+            *on = !*on;
+            resp.mark_changed();
+        }
+        resp
+    })
+    .inner
+}
+
+/// An outlined Material card.
+pub fn card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<R> {
+    let r = roles(ui.ctx());
+    egui::Frame::new()
+        .fill(r.surface_container_low)
+        .stroke(Stroke::new(1.0, r.outline_variant))
+        .corner_radius(12)
+        .inner_margin(16)
+        .show(ui, add)
+}
+
+/// The frame for a page's content: Material's 16 dp margins.
+pub fn page_frame(ctx: &egui::Context) -> egui::Frame {
+    egui::Frame::new().fill(roles(ctx).surface).inner_margin(16)
+}
+
+/// A Material dialog: centred, 28 dp corners, a headline, then the content.
+/// Returns what the content returned while it is open.
+pub fn dialog<R>(ctx: &egui::Context, title: &str, width: f32, add: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<Option<R>> {
+    let r = roles(ctx);
+    let frame = egui::Frame::new()
+        .fill(r.surface_container_high)
+        .corner_radius(28)
+        .inner_margin(24)
+        .shadow(shadow(r.shadow, 24, 0.20));
+    egui::Window::new(title)
+        .title_bar(false)
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .frame(frame)
+        .show(ctx, |ui| {
+            ui.set_width(width);
+            ui.label(egui::RichText::new(title).size(24.0));
+            ui.add_space(12.0);
+            add(ui)
+        })
+        .expect("a dialog is always open when shown")
+}
+
+/// A right-aligned row for a dialog's buttons. Buttons are laid out right to
+/// left, so add the main action first and the dismissive one last.
+pub fn actions(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+    ui.add_space(16.0);
+    // A fixed-height row: a right-to-left layout would otherwise take all the
+    // height left in the window and leave a gap above the buttons.
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), 40.0),
+        egui::Layout::right_to_left(egui::Align::Center),
+        add,
+    );
+}
+
+/// A navigation item (as in a navigation drawer): a pill that fills with the
+/// secondary container when selected.
+pub fn nav_item(ui: &mut egui::Ui, selected: bool, label: &str) -> egui::Response {
+    let r = roles(ui.ctx());
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 48.0), egui::Sense::click());
+    let painter = ui.painter();
+    if selected {
+        painter.rect_filled(rect, 24.0, r.secondary_container);
+    } else if resp.hovered() || resp.is_pointer_button_down_on() {
+        let opacity = if resp.is_pointer_button_down_on() { 0.12 } else { 0.08 };
+        painter.rect_filled(rect, 24.0, r.on_surface.gamma_multiply(opacity));
+    }
+    let color = if selected { r.on_secondary_container } else { r.on_surface_variant };
+    painter.text(
+        egui::pos2(rect.left() + 20.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        FontId::new(15.0, FontFamily::Name(MEDIUM.into())),
+        color,
+    );
+    resp
+}
+
 /// A Material "primary tab": medium-weight label, a rounded indicator under
 /// the active tab, and state layers on hover and press.
 pub fn tab(ui: &mut egui::Ui, selected: bool, label: &str, height: f32) -> egui::Response {
@@ -304,6 +473,9 @@ mod tests {
             assert!(ratio(r.on_secondary_container, r.secondary_container) >= 4.5, "{theme:?} tonal buttons");
             assert!(ratio(r.on_primary, r.primary) >= 4.5, "{theme:?} filled buttons");
             assert!(ratio(r.primary, r.surface) >= 3.0, "{theme:?} tab indicator against the surface");
+            assert!(ratio(r.primary, r.surface_container_high) >= 4.5, "{theme:?} text buttons in dialogs");
+            assert!(ratio(r.primary, r.secondary_container) >= 3.0, "{theme:?} text buttons in the update banner");
+            assert!(ratio(r.on_surface_variant, r.surface) >= 4.5, "{theme:?} table headers and hints");
         }
     }
 

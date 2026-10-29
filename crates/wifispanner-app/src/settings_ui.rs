@@ -46,48 +46,60 @@ pub fn show(
     launcher: &mut LauncherView,
 ) -> bool {
     let before = settings.clone();
-    egui::Window::new("Settings")
-        .open(open)
-        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-        .default_size([680.0, 460.0])
-        .collapsible(false)
-        .show(ctx, |ui| {
-            ui.spacing_mut().interact_size.y = 32.0;
-            egui::Panel::left("settings_sections").exact_size(150.0).show_separator_line(true).show(ui, |ui| {
+    let mut close = false;
+    crate::theme::dialog(ctx, "Settings", 680.0, |ui| {
+        ui.horizontal_top(|ui| {
+            ui.vertical(|ui| {
+                ui.set_width(160.0);
                 for (s, name) in Section::ALL {
-                    ui.selectable_value(section, s, egui::RichText::new(name).size(16.0));
+                    if crate::theme::nav_item(ui, *section == s, name).clicked() {
+                        *section = s;
+                    }
                 }
             });
-            egui::CentralPanel::default().show(ui, |ui| match *section {
-                Section::Scanner => scanner(ui, settings, cards),
-                Section::Survey => survey(ui, settings),
-                Section::Heatmap => heatmap_section(ui, settings),
-                Section::General => general(ui, settings, launcher),
+            ui.add_space(16.0);
+            ui.vertical(|ui| {
+                ui.set_width(480.0);
+                egui::ScrollArea::vertical().max_height(420.0).auto_shrink([false, false]).show(ui, |ui| match *section {
+                    Section::Scanner => scanner(ui, settings, cards),
+                    Section::Survey => survey(ui, settings),
+                    Section::Heatmap => heatmap_section(ui, settings),
+                    Section::General => general(ui, settings, launcher),
+                });
             });
         });
+        crate::theme::actions(ui, |ui| {
+            if crate::theme::button(ui, crate::theme::ButtonKind::Filled, None, "Done").clicked() {
+                close = true;
+            }
+        });
+    });
+    if close {
+        *open = false;
+    }
     *settings != before
 }
 
 fn general(ui: &mut egui::Ui, s: &mut Settings, launcher: &mut LauncherView) {
-    ui.strong("Appearance");
+    ui.label(crate::theme::medium("Appearance"));
     ui.horizontal(|ui| {
         for mode in crate::theme::ThemeMode::ALL {
             ui.selectable_value(&mut s.theme_mode, mode, mode.name());
         }
     });
     ui.add_space(14.0);
-    ui.checkbox(&mut s.check_updates, "Check for updates when the app starts");
+    crate::theme::switch_row(ui, &mut s.check_updates, "Check for updates when the app starts");
     ui.weak(
         "Asks GitHub whether a newer release exists, which shares your IP address with GitHub. You can also check \
          any time from the menu: Check for updates.",
     );
     ui.add_space(14.0);
-    ui.strong("Application menu and icon");
+    ui.label(crate::theme::medium("Application menu and icon"));
     if !launcher.available {
         ui.weak("Available when running the AppImage.");
     } else if launcher.installed {
         ui.label("WiFi Spanner is in your application menu.");
-        if ui.button("Remove launcher").clicked() {
+        if crate::theme::button(ui, crate::theme::ButtonKind::Outlined, Some(egui_material_icons::icons::ICON_DELETE), "Remove launcher").clicked() {
             launcher.request = Some(false);
         }
     } else {
@@ -95,7 +107,7 @@ fn general(ui: &mut egui::Ui, s: &mut Settings, launcher: &mut LauncherView) {
             "Adds a launcher and the WiFi Spanner icon to your home folder, so the app shows its icon in the taskbar \
              and title bar and can be started from the menu.",
         );
-        if ui.button("Add launcher").clicked() {
+        if crate::theme::button(ui, crate::theme::ButtonKind::Tonal, Some(egui_material_icons::icons::ICON_ADD), "Add launcher").clicked() {
             launcher.request = Some(true);
         }
     }
@@ -105,7 +117,7 @@ fn general(ui: &mut egui::Ui, s: &mut Settings, launcher: &mut LauncherView) {
 }
 
 fn scanner(ui: &mut egui::Ui, s: &mut Settings, cards: &[WifiCard]) {
-    ui.strong("Scan time");
+    ui.label(crate::theme::medium("Scan time"));
     egui::ComboBox::from_id_salt("dwell").selected_text(format!("{} s", s.dwell_secs)).show_ui(ui, |ui| {
         for d in DWELLS {
             ui.selectable_value(&mut s.dwell_secs, d, format!("{d} s"));
@@ -116,11 +128,11 @@ fn scanner(ui: &mut egui::Ui, s: &mut Settings, cards: &[WifiCard]) {
          more chances to be heard, so use 5 or 10 s for surveys.",
     );
     ui.add_space(12.0);
-    ui.strong("Wi-Fi radios");
+    ui.label(crate::theme::medium("Wi-Fi radios"));
     ui.weak("Pick the card from the menu: Adapters.");
     let multi = Settings::radio_count(cards) > 1;
     ui.add_enabled_ui(multi, |ui| {
-        ui.checkbox(&mut s.use_all, "Use all").on_disabled_hover_text("Needs a second Wi-Fi adapter");
+        crate::theme::switch_row(ui, &mut s.use_all, "Use all").on_disabled_hover_text("Needs a second Wi-Fi adapter");
     });
     ui.weak(if multi {
         "Scans with every Wi-Fi radio at once, which needs driver support for each. Readings from different cards \
@@ -131,25 +143,25 @@ fn scanner(ui: &mut egui::Ui, s: &mut Settings, cards: &[WifiCard]) {
 }
 
 fn survey(ui: &mut egui::Ui, s: &mut Settings) {
-    ui.checkbox(&mut s.show_plan, "Show floor plan");
-    ui.checkbox(&mut s.show_path, "Show path between points");
-    ui.checkbox(&mut s.gray_unmeasured, "Gray out unmeasured area");
-    ui.checkbox(&mut s.show_numbers, "Show point numbers");
+    crate::theme::switch_row(ui, &mut s.show_plan, "Show floor plan");
+    crate::theme::switch_row(ui, &mut s.show_path, "Show path between points");
+    crate::theme::switch_row(ui, &mut s.gray_unmeasured, "Gray out unmeasured area");
+    crate::theme::switch_row(ui, &mut s.show_numbers, "Show point numbers");
     ui.add_space(8.0);
-    ui.strong("Point marker size");
+    ui.label(crate::theme::medium("Point marker size"));
     egui::ComboBox::from_id_salt("marker").selected_text(s.marker_size.name()).show_ui(ui, |ui| {
         for m in MarkerSize::ALL {
             ui.selectable_value(&mut s.marker_size, m, m.name());
         }
     });
     ui.add_space(12.0);
-    if ui.button("Reset survey settings").clicked() {
+    if crate::theme::button(ui, crate::theme::ButtonKind::Outlined, Some(egui_material_icons::icons::ICON_REFRESH), "Reset survey settings").clicked() {
         s.reset_survey();
     }
 }
 
 fn heatmap_section(ui: &mut egui::Ui, s: &mut Settings) {
-    ui.strong("Heatmap colors");
+    ui.label(crate::theme::medium("Heatmap colors"));
     ui.horizontal(|ui| {
         for scheme in ColorScheme::ALL {
             if swatch(ui, scheme, s.color_scheme == scheme, s.min_dbm, s.max_dbm).clicked() {
@@ -158,16 +170,16 @@ fn heatmap_section(ui: &mut egui::Ui, s: &mut Settings) {
         }
     });
     ui.add_space(8.0);
-    ui.strong("Signal range");
+    ui.label(crate::theme::medium("Signal range"));
     ui.weak("Signal at or below the minimum shows as the weakest colour; at or above the maximum, the strongest.");
     signal_slider(ui, "Min signal level, dBm", &mut s.min_dbm, SIGNAL_FLOOR, s.max_dbm - 5.0);
     signal_slider(ui, "Max signal level, dBm", &mut s.max_dbm, s.min_dbm + 5.0, SIGNAL_CEIL);
     ui.add_space(8.0);
-    ui.strong("Detection sensitivity");
+    ui.label(crate::theme::medium("Detection sensitivity"));
     ui.weak("Readings weaker than this are treated as not heard.");
     signal_slider(ui, "Weakest signal counted, dBm", &mut s.detect_dbm, SIGNAL_FLOOR, -40.0);
     ui.add_space(12.0);
-    if ui.button("Reset heatmap settings").clicked() {
+    if crate::theme::button(ui, crate::theme::ButtonKind::Outlined, Some(egui_material_icons::icons::ICON_REFRESH), "Reset heatmap settings").clicked() {
         s.reset_heatmap();
     }
 }

@@ -11,6 +11,8 @@ use eframe::egui;
 use wifispanner_core::survey::Project;
 
 use crate::settings::Settings;
+use crate::theme::{self, ButtonKind};
+use egui_material_icons::icons::{ICON_DESCRIPTION, ICON_FOLDER, ICON_FOLDER_OPEN, ICON_IMAGE, ICON_OPEN_IN_NEW, ICON_REFRESH};
 use crate::{report, store};
 
 #[derive(Clone)]
@@ -104,10 +106,13 @@ impl ProjectsTab {
     /// Returns a project to open in the floor plan tab, if one was chosen.
     pub fn show(&mut self, ui: &mut egui::Ui, settings: &Settings) -> Option<PathBuf> {
         let mut open = None;
-        egui::Panel::left("projects_list").default_size(440.0).show(ui, |ui| {
-            ui.heading("Projects");
-            ui.horizontal(|ui| {
-                if ui.button("Open project file...").clicked()
+        let roles = theme::roles(ui.ctx());
+        let list_frame = egui::Frame::new().fill(roles.surface).inner_margin(16);
+        egui::Panel::left("projects_list").default_size(440.0).frame(list_frame).show(ui, |ui| {
+            ui.label(egui::RichText::new("Projects").size(24.0));
+            ui.add_space(8.0);
+            ui.horizontal_wrapped(|ui| {
+                if theme::button(ui, ButtonKind::Tonal, Some(ICON_FOLDER_OPEN), "Open project file").clicked()
                     && let Some(p) = rfd::FileDialog::new()
                         .add_filter("WiFi Spanner project", &[store::EXTENSION])
                         .set_directory(store::projects_dir())
@@ -115,10 +120,10 @@ impl ProjectsTab {
                 {
                     open = Some(p);
                 }
-                if ui.button("Refresh").clicked() {
+                if theme::button(ui, ButtonKind::Text, Some(ICON_REFRESH), "Refresh").clicked() {
                     self.refresh();
                 }
-                if ui.button("Show folder").clicked() {
+                if theme::button(ui, ButtonKind::Text, Some(ICON_FOLDER), "Show folder").clicked() {
                     let dir = store::projects_dir();
                     let _ = std::fs::create_dir_all(&dir);
                     if let Err(e) = store::open_externally(&dir) {
@@ -127,32 +132,47 @@ impl ProjectsTab {
                 }
             });
             ui.weak(store::projects_dir().display().to_string());
-            ui.separator();
+            ui.add_space(8.0);
             if self.entries.is_empty() {
                 ui.label("No saved projects yet. Open a floor plan in the Floor plan survey tab to start one.");
             }
             egui::ScrollArea::vertical().show(ui, |ui| {
                 for e in &self.entries {
+                    let selected = self.selected.as_ref() == Some(&e.path);
                     let when = e.modified.map_or(String::new(), store::format_time);
-                    let label = match &e.error {
-                        Some(_) => format!("{}  (unreadable)", e.name),
-                        None => format!("{}   {} points   {}", e.name, e.points, when),
+                    let meta = match &e.error {
+                        Some(_) => "Could not be read".to_string(),
+                        None => format!("{} points  ·  {when}", e.points),
                     };
-                    let resp = ui.selectable_label(self.selected.as_ref() == Some(&e.path), label);
+                    let frame = egui::Frame::new()
+                        .fill(if selected { roles.secondary_container } else { roles.surface_container_low })
+                        .stroke(egui::Stroke::new(1.0, if selected { roles.secondary_container } else { roles.outline_variant }))
+                        .corner_radius(12)
+                        .inner_margin(14);
+                    let card = frame.show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(theme::medium(&e.name).size(16.0));
+                        ui.label(egui::RichText::new(meta).size(13.0).color(roles.on_surface_variant));
+                    });
+                    let resp = ui.interact(card.response.rect, ui.make_persistent_id(("project-card", &e.path)), egui::Sense::click());
+                    if resp.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
                     if resp.clicked() {
                         self.selected = Some(e.path.clone());
                     }
                     if resp.double_clicked() && e.error.is_none() {
                         open = Some(e.path.clone());
                     }
+                    ui.add_space(6.0);
                 }
             });
         });
 
-        egui::CentralPanel::default().show(ui, |ui| {
+        egui::CentralPanel::default().frame(theme::page_frame(ui.ctx())).show(ui, |ui| {
             if !self.status.is_empty() {
-                ui.label(&self.status);
-                ui.separator();
+                ui.colored_label(roles.on_surface_variant, &self.status);
+                ui.add_space(8.0);
             }
             let Some(sel) = self.selected.clone() else {
                 ui.label("Select a project to see its details and reports.");
@@ -162,50 +182,66 @@ impl ProjectsTab {
                 ui.label("Select a project to see its details and reports.");
                 return;
             };
-            ui.heading(&s.name);
+            ui.label(egui::RichText::new(&s.name).size(24.0));
             ui.weak(s.path.display().to_string());
+            ui.add_space(10.0);
             if let Some(err) = &s.error {
-                ui.colored_label(egui::Color32::LIGHT_RED, format!("Could not read this project: {err}"));
+                ui.colored_label(roles.error, format!("Could not read this project: {err}"));
                 return;
             }
-            ui.label(format!("{} survey points, {} access points seen", s.points, s.aps));
-            ui.label(if s.scale_set { "Scale set" } else { "Scale not set" });
-            if let (Some(a), Some(b)) = (s.first_scan, s.last_scan) {
-                ui.label(format!(
-                    "Measured {} to {}",
-                    store::format_unix(a, "+%Y-%m-%d %H:%M"),
-                    store::format_unix(b, "+%Y-%m-%d %H:%M")
-                ));
-            }
-            ui.horizontal(|ui| {
-                if ui.button("Open in floor plan tab").clicked() {
+            theme::card(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(format!("{} survey points, {} access points seen", s.points, s.aps));
+                ui.label(if s.scale_set { "Scale set" } else { "Scale not set" });
+                if let (Some(a), Some(b)) = (s.first_scan, s.last_scan) {
+                    ui.label(format!(
+                        "Measured {} to {}",
+                        store::format_unix(a, "+%Y-%m-%d %H:%M"),
+                        store::format_unix(b, "+%Y-%m-%d %H:%M")
+                    ));
+                }
+            });
+            ui.add_space(10.0);
+            ui.horizontal_wrapped(|ui| {
+                if theme::button(ui, ButtonKind::Filled, Some(ICON_IMAGE), "Open in floor plan tab").clicked() {
                     open = Some(s.path.clone());
                 }
-                if ui.add_enabled(s.points > 0, egui::Button::new("Generate report")).clicked() {
+                let report = ui.add_enabled_ui(s.points > 0, |ui| theme::button(ui, ButtonKind::Tonal, Some(ICON_DESCRIPTION), "Generate report")).inner;
+                if report.clicked() {
                     self.generate_report(&s.path, &report::ReportStyle::from_settings(settings));
                 }
             });
-            ui.separator();
-            ui.strong("Reports");
+            ui.add_space(16.0);
+            ui.label(theme::medium("Reports").size(18.0));
+            ui.add_space(6.0);
             if self.reports_of.as_ref() != Some(&sel) {
                 self.reports = store::reports_for(&sel);
                 self.reports_of = Some(sel.clone());
             }
             if self.reports.is_empty() {
-                ui.label("No reports yet.");
+                ui.weak("No reports yet.");
             }
             for r in &self.reports {
-                ui.horizontal(|ui| {
-                    let name = r.path.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned());
-                    ui.label(format!("{name}   {}", r.modified.map_or(String::new(), store::format_time)));
-                    if ui.button("Open").clicked()
-                        && let Err(e) = store::open_externally(&r.path)
-                    {
-                        self.status = e;
-                    }
+                theme::card(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        let name = r.path.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned());
+                        ui.vertical(|ui| {
+                            ui.label(theme::medium(name));
+                            ui.weak(r.modified.map_or(String::new(), store::format_time));
+                        });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if theme::button(ui, ButtonKind::Tonal, Some(ICON_OPEN_IN_NEW), "Open").clicked()
+                                && let Err(e) = store::open_externally(&r.path)
+                            {
+                                self.status = e;
+                            }
+                        });
+                    });
                 });
+                ui.add_space(6.0);
             }
-            if !self.reports.is_empty() && ui.button("Show reports folder").clicked() {
+            if !self.reports.is_empty() && theme::button(ui, ButtonKind::Text, Some(ICON_FOLDER), "Show reports folder").clicked() {
                 if let Err(e) = store::open_externally(&store::reports_dir(&sel)) {
                     self.status = e;
                 }

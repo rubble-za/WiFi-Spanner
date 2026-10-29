@@ -13,6 +13,8 @@ use wifispanner_core::survey::{Floor, Project, SurveyPoint, Target};
 use wifispanner_scan::{Band, ScanResult};
 
 use crate::settings::Settings;
+use crate::theme::{self, ButtonKind};
+use egui_material_icons::icons::{ICON_DELETE, ICON_DESCRIPTION, ICON_FOLDER_OPEN, ICON_IMAGE, ICON_SAVE};
 use crate::{Cmd, pdf, report, store};
 use crate::live::signal_color;
 
@@ -202,47 +204,42 @@ impl FloorTab {
         }
         let count = picker.thumbs.len();
         let (mut import, mut cancel) = (false, false);
-        egui::Window::new("Choose a page to import")
-            .collapsible(false)
-            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-            .default_size([760.0, 520.0])
-            .show(ctx, |ui| {
-                ui.label(format!("{} has {count} pages. Click a page, then Import (or double-click it).", picker.name));
-                let loaded = picker.thumbs.iter().filter(|t| t.is_some()).count();
-                if loaded < count {
-                    ui.label(format!("Rendering previews... {loaded} of {count}"));
-                }
-                ui.separator();
-                egui::ScrollArea::vertical().max_height(ui.available_height() - 40.0).show(ui, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        for i in 0..count {
-                            ui.vertical(|ui| {
-                                let selected = picker.selected == i;
-                                let size = Vec2::splat(THUMB_CELL);
-                                let resp = match &picker.thumbs[i] {
-                                    Some(t) => ui.add(egui::Button::image(egui::Image::new(t).max_size(size)).selected(selected)),
-                                    None => ui.add_sized(size, egui::Button::new("Loading...").selected(selected)),
-                                };
-                                ui.label(format!("Page {}", i + 1));
-                                if resp.clicked() {
-                                    picker.selected = i;
-                                }
-                                if resp.double_clicked() {
-                                    picker.selected = i;
-                                    import = true;
-                                }
-                            });
-                        }
-                    });
-                });
-                ui.separator();
-                ui.horizontal(|ui| {
-                    if ui.button(format!("Import page {}", picker.selected + 1)).clicked() {
-                        import = true;
+        theme::dialog(ctx, "Choose a page to import", 720.0, |ui| {
+            ui.label(format!("{} has {count} pages. Click a page, then Import (or double-click it).", picker.name));
+            let loaded = picker.thumbs.iter().filter(|t| t.is_some()).count();
+            if loaded < count {
+                ui.weak(format!("Rendering previews... {loaded} of {count}"));
+            }
+            ui.add_space(8.0);
+            egui::ScrollArea::vertical().max_height(360.0).auto_shrink([false, true]).show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    for i in 0..count {
+                        ui.vertical(|ui| {
+                            let selected = picker.selected == i;
+                            let size = Vec2::splat(THUMB_CELL);
+                            let resp = match &picker.thumbs[i] {
+                                Some(t) => ui.add(egui::Button::image(egui::Image::new(t).max_size(size)).selected(selected)),
+                                None => ui.add_sized(size, egui::Button::new("Loading...").selected(selected)),
+                            };
+                            ui.label(format!("Page {}", i + 1));
+                            if resp.clicked() {
+                                picker.selected = i;
+                            }
+                            if resp.double_clicked() {
+                                picker.selected = i;
+                                import = true;
+                            }
+                        });
                     }
-                    cancel = ui.button("Cancel").clicked();
                 });
             });
+            theme::actions(ui, |ui| {
+                if theme::button(ui, ButtonKind::Filled, None, &format!("Import page {}", picker.selected + 1)).clicked() {
+                    import = true;
+                }
+                cancel = theme::button(ui, ButtonKind::Text, None, "Cancel").clicked();
+            });
+        });
         if import {
             let PdfPicker { name, bytes, selected, .. } = picker;
             self.import_pdf_page(ctx, bytes, selected, count, name);
@@ -283,9 +280,13 @@ impl FloorTab {
             self.view = env.settings.clone();
             self.heat_dirty = true;
         }
-        egui::Panel::top("floor_tools").show(ui, |ui| self.toolbar(ui));
-        egui::Panel::right("floor_points").default_size(300.0).show(ui, |ui| self.side_panel(ui));
-        egui::CentralPanel::default().show(ui, |ui| self.canvas(ui, env));
+        let roles = theme::roles(ui.ctx());
+        let tools = egui::Frame::new().fill(roles.surface).inner_margin(egui::Margin::symmetric(16, 10));
+        let side = egui::Frame::new().fill(roles.surface).inner_margin(16);
+        let canvas = egui::Frame::new().fill(roles.surface_container_lowest);
+        egui::Panel::top("floor_tools").frame(tools).show(ui, |ui| self.toolbar(ui));
+        egui::Panel::right("floor_points").default_size(320.0).frame(side).show(ui, |ui| self.side_panel(ui));
+        egui::CentralPanel::default().frame(canvas).show(ui, |ui| self.canvas(ui, env));
         self.scale_dialog(ui.ctx());
         self.pdf_dialog(ui.ctx());
     }
@@ -317,24 +318,25 @@ impl FloorTab {
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         ui.horizontal_wrapped(|ui| {
-            if ui.button("Open floor plan...").clicked() {
+            if theme::button(ui, ButtonKind::Tonal, Some(ICON_IMAGE), "Open floor plan").clicked() {
                 self.pick_plan(&ctx);
             }
-            if ui.button("Open project...").clicked() {
+            if theme::button(ui, ButtonKind::Tonal, Some(ICON_FOLDER_OPEN), "Open project").clicked() {
                 self.pick_project(&ctx);
             }
             ui.add_enabled_ui(self.project.is_some(), |ui| {
-                if ui.button("Save").clicked() {
+                if theme::button(ui, ButtonKind::Tonal, Some(ICON_SAVE), "Save").clicked() {
                     match self.path.clone() {
                         Some(p) => self.save_to(&p),
                         None => self.save_as(),
                     }
                 }
-                if ui.button("Save as...").clicked() {
+                if theme::button(ui, ButtonKind::Text, None, "Save as...").clicked() {
                     self.save_as();
                 }
                 let has_points = self.project.as_ref().is_some_and(|p| !p.floor.points.is_empty());
-                if ui.add_enabled(has_points, egui::Button::new("Generate report")).clicked() {
+                let report = ui.add_enabled_ui(has_points, |ui| theme::button(ui, ButtonKind::Filled, Some(ICON_DESCRIPTION), "Generate report")).inner;
+                if report.clicked() {
                     self.make_report();
                 }
             });
@@ -356,7 +358,7 @@ impl FloorTab {
 
         let Some(floor) = self.project.as_ref().map(|p| &p.floor) else { return };
         ui.horizontal_wrapped(|ui| {
-            let mut changed = ui.checkbox(&mut self.show_heat, "Heatmap").changed();
+            let mut changed = theme::switch_row(ui, &mut self.show_heat, "Heatmap").changed();
             ui.add_enabled_ui(self.show_heat, |ui| {
                 ui.label("Show");
                 let label = match &self.target {
@@ -381,9 +383,10 @@ impl FloorTab {
                             changed |= ui.selectable_value(&mut self.band, Some(b), b.to_string()).changed();
                         }
                     });
+                ui.spacing_mut().slider_width = 100.0;
                 ui.add(egui::Slider::new(&mut self.opacity, 0.1..=1.0).text("Opacity"));
                 if floor.metres_per_px.is_some() {
-                    changed |= ui.add(egui::Slider::new(&mut self.fade_m, 2.0..=30.0).text("Fade distance (m)")).changed();
+                    changed |= ui.add(egui::Slider::new(&mut self.fade_m, 2.0..=30.0).text("Fade (m)")).changed();
                 }
             });
             if changed {
@@ -459,7 +462,7 @@ impl FloorTab {
             ui.separator();
             ui.horizontal(|ui| {
                 ui.strong(format!("Point #{}", i + 1));
-                if ui.button("Delete").clicked() {
+                if theme::button(ui, ButtonKind::Outlined, Some(ICON_DELETE), "Delete").clicked() {
                     delete = Some(i);
                 }
             });
@@ -619,14 +622,15 @@ impl FloorTab {
         }
         let (a, b) = (self.scale_clicks[0], self.scale_clicks[1]);
         let mut done = false;
-        egui::Window::new("Set scale").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO).show(ctx, |ui| {
+        theme::dialog(ctx, "Set scale", 380.0, |ui| {
             ui.label(format!("The two points are {:.0} px apart. What is that distance in metres?", a.distance(b)));
-            let edit = ui.text_edit_singleline(&mut self.scale_input);
+            ui.add_space(8.0);
+            let edit = ui.add(egui::TextEdit::singleline(&mut self.scale_input).hint_text("Distance in metres").desired_width(f32::INFINITY));
             edit.request_focus();
             let metres = self.scale_input.trim().replace(',', ".").parse::<f32>().ok().filter(|m| *m > 0.0);
-            ui.horizontal(|ui| {
-                let ok = ui.add_enabled(metres.is_some(), egui::Button::new("Set scale")).clicked()
-                    || (edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && metres.is_some());
+            theme::actions(ui, |ui| {
+                let set = ui.add_enabled_ui(metres.is_some(), |ui| theme::button(ui, ButtonKind::Filled, None, "Set scale")).inner;
+                let ok = set.clicked() || (edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && metres.is_some());
                 if ok && let (Some(m), Some(p)) = (metres, self.project.as_mut()) {
                     p.floor.metres_per_px = Some(m / a.distance(b).max(0.001));
                     self.status = "Scale set. Switch to \"Survey point\" and click where you are standing.".into();
@@ -634,7 +638,7 @@ impl FloorTab {
                     self.heat_dirty = true;
                     done = true;
                 }
-                if ui.button("Cancel").clicked() {
+                if theme::button(ui, ButtonKind::Text, None, "Cancel").clicked() {
                     done = true;
                 }
             });

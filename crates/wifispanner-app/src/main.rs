@@ -22,6 +22,8 @@ use std::time::Duration;
 
 use eframe::egui;
 use settings::Settings;
+use theme::ButtonKind;
+use egui_material_icons::icons::{ICON_CLOSE, ICON_SYSTEM_UPDATE};
 use wifispanner_scan::dwell::scan_for_many;
 use wifispanner_scan::iw::WifiCard;
 use wifispanner_scan::{ScanResult, Scanner, default_scanner, list_cards};
@@ -414,20 +416,22 @@ impl App {
         let can_install = info.asset.is_some() && self.appimage.is_some();
         let mut choice = None;
         let roles = theme::roles(ui.ctx());
-        let banner = egui::Frame::new().fill(roles.primary_container).inner_margin(egui::Margin::symmetric(16, 6));
+        let banner = egui::Frame::new().fill(roles.secondary_container).inner_margin(egui::Margin::symmetric(16, 6));
         egui::Panel::top("update_notice").frame(banner).show(ui, |ui| {
-            ui.visuals_mut().override_text_color = Some(roles.on_primary_container);
+            ui.visuals_mut().override_text_color = Some(roles.on_secondary_container);
             ui.horizontal(|ui| {
                 ui.label(format!("WiFi Spanner {} is available (you have {}).", info.tag, env!("CARGO_PKG_VERSION")));
                 ui.hyperlink_to(if can_install { "Release notes" } else { "View the release and download" }, &info.url);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Dismiss").on_hover_text("Skip this version. You will be told about newer ones.").clicked() {
+                    let dismiss = theme::button(ui, ButtonKind::Text, None, "Dismiss");
+                    if dismiss.on_hover_text("Skip this version. You will be told about newer ones.").clicked() {
                         choice = Some(Choice::Dismiss);
                     }
-                    if ui.button("Remind me tomorrow").on_hover_text("Hide this for a day, then ask again.").clicked() {
+                    let tomorrow = theme::button(ui, ButtonKind::Text, None, "Remind me tomorrow");
+                    if tomorrow.on_hover_text("Hide this for a day, then ask again.").clicked() {
                         choice = Some(Choice::Tomorrow);
                     }
-                    if can_install && ui.button("Update now").clicked() {
+                    if can_install && theme::button(ui, ButtonKind::Filled, Some(ICON_SYSTEM_UPDATE), "Update now").clicked() {
                         choice = Some(Choice::Update);
                     }
                 });
@@ -516,12 +520,11 @@ impl App {
                          file, then replaces {path} and restarts the app. If anything doesn't check out, nothing is \
                          replaced. Your projects and settings are not touched."
                     ));
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Install and restart").clicked() {
+                    theme::actions(ui, |ui| {
+                        if theme::button(ui, ButtonKind::Filled, Some(ICON_SYSTEM_UPDATE), "Install and restart").clicked() {
                             *act = Some(Act::Install(info.clone()));
                         }
-                        if ui.button("Cancel").clicked() {
+                        if theme::button(ui, ButtonKind::Text, None, "Cancel").clicked() {
                             *act = Some(Act::Close);
                         }
                     });
@@ -533,28 +536,33 @@ impl App {
                 let tag = info.tag.clone();
                 ("Updating", Box::new(move |ui, act| {
                     ui.label(format!("Downloading WiFi Spanner {tag}..."));
-                    ui.add(egui::ProgressBar::new(frac).text(format!("{:.1} of {:.1} MB", done as f64 / 1_048_576.0, total as f64 / 1_048_576.0)));
-                    if ui.button("Cancel").clicked() {
-                        *act = Some(Act::Cancel);
-                    }
+                    ui.add_space(8.0);
+                    ui.scope(|ui| {
+                        ui.visuals_mut().selection.bg_fill = theme::roles(ui.ctx()).primary;
+                        ui.add(egui::ProgressBar::new(frac).text(format!("{:.1} of {:.1} MB", done as f64 / 1_048_576.0, total as f64 / 1_048_576.0)));
+                    });
+                    theme::actions(ui, |ui| {
+                        if theme::button(ui, ButtonKind::Text, None, "Cancel").clicked() {
+                            *act = Some(Act::Cancel);
+                        }
+                    });
                 }))
             }
             InstallState::Failed { info, message } => {
                 let (url, message) = (info.url.clone(), message.clone());
                 ("Update failed", Box::new(move |ui, act| {
-                    ui.colored_label(egui::Color32::LIGHT_RED, format!("The update was not installed: {message}"));
+                    ui.colored_label(theme::roles(ui.ctx()).error, format!("The update was not installed: {message}"));
                     ui.label("Your current version is unchanged.");
                     ui.hyperlink_to("Download it from the release page instead", url);
-                    if ui.button("Close").clicked() {
-                        *act = Some(Act::Close);
-                    }
+                    theme::actions(ui, |ui| {
+                        if theme::button(ui, ButtonKind::Filled, None, "Close").clicked() {
+                            *act = Some(Act::Close);
+                        }
+                    });
                 }))
             }
         };
-        egui::Window::new(title).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO).show(ctx, |ui| {
-            ui.set_max_width(460.0);
-            body(ui, &mut act);
-        });
+        theme::dialog(ctx, title, 440.0, |ui| body(ui, &mut act));
         match act {
             Some(Act::Install(info)) => self.start_install(ctx, info),
             Some(Act::Cancel) => self.install_cancel.store(true, Ordering::Relaxed),
@@ -566,20 +574,17 @@ impl App {
     fn update_message_window(&mut self, ctx: &egui::Context) {
         let Some((text, url)) = self.update_message.clone() else { return };
         let mut close = false;
-        egui::Window::new("Check for updates")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .show(ctx, |ui| {
-                ui.set_max_width(420.0);
-                ui.label(&text);
-                if let Some(url) = &url {
-                    ui.hyperlink_to("View the release and download", url);
-                }
-                if ui.button("OK").clicked() {
+        theme::dialog(ctx, "Check for updates", 400.0, |ui| {
+            ui.label(&text);
+            if let Some(url) = &url {
+                ui.hyperlink_to("View the release and download", url);
+            }
+            theme::actions(ui, |ui| {
+                if theme::button(ui, ButtonKind::Filled, None, "OK").clicked() {
                     close = true;
                 }
             });
+        });
         if close {
             self.update_message = None;
         }
@@ -668,28 +673,23 @@ impl App {
             return;
         }
         let mut answer = None;
-        egui::Window::new("Add WiFi Spanner to your application menu?")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .show(ctx, |ui| {
-                ui.set_max_width(440.0);
-                ui.label(
-                    "This adds a launcher and the WiFi Spanner icon to your home folder (a .desktop file under \
-                     ~/.local/share/applications and an icon under ~/.local/share/icons), so the app shows its icon in \
-                     the taskbar and title bar and can be started from the menu.",
-                );
-                ui.weak("You can remove it any time in Settings > General.");
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Add launcher").clicked() {
-                        answer = Some(true);
-                    }
-                    if ui.button("Not now").clicked() {
-                        answer = Some(false);
-                    }
-                });
+        theme::dialog(ctx, "Add WiFi Spanner to your application menu?", 440.0, |ui| {
+            ui.label(
+                "This adds a launcher and the WiFi Spanner icon to your home folder (a .desktop file under \
+                 ~/.local/share/applications and an icon under ~/.local/share/icons), so the app shows its icon in \
+                 the taskbar and title bar and can be started from the menu.",
+            );
+            ui.add_space(6.0);
+            ui.weak("You can remove it any time in Settings > General.");
+            theme::actions(ui, |ui| {
+                if theme::button(ui, ButtonKind::Filled, None, "Add launcher").clicked() {
+                    answer = Some(true);
+                }
+                if theme::button(ui, ButtonKind::Text, None, "Not now").clicked() {
+                    answer = Some(false);
+                }
             });
+        });
         if let Some(add) = answer {
             if add {
                 self.set_launcher(true);
@@ -701,32 +701,37 @@ impl App {
     }
 
     fn about_window(&mut self, ctx: &egui::Context) {
-        let mut open = self.about_open;
-        egui::Window::new("About WiFi Spanner")
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .show(ctx, |ui| {
-                ui.vertical_centered(|ui| {
-                    if let Some(logo) = &self.logo {
-                        ui.add(egui::Image::new(logo).fit_to_exact_size(egui::Vec2::splat(96.0)));
-                    }
-                    ui.label(egui::RichText::new("WiFi Spanner").heading());
-                    ui.label(TAGLINE);
-                    ui.weak(format!("Version {}", env!("CARGO_PKG_VERSION")));
-                    ui.add_space(6.0);
-                    ui.label("Copyright (C) 2026 rubble-za");
-                    ui.hyperlink_to(REPO_URL, REPO_URL);
-                    ui.add_space(6.0);
-                    ui.weak(
-                        "Free software under the GNU General Public License, version 3 or later, with attribution \
-                         terms (see NOTICE). This program comes with ABSOLUTELY NO WARRANTY.",
-                    );
-                    ui.hyperlink_to("GNU General Public License", "https://www.gnu.org/licenses/gpl-3.0.html");
-                });
+        if !self.about_open {
+            return;
+        }
+        let mut close = false;
+        theme::dialog(ctx, "About WiFi Spanner", 380.0, |ui| {
+            ui.vertical_centered(|ui| {
+                if let Some(logo) = &self.logo {
+                    ui.add(egui::Image::new(logo).fit_to_exact_size(egui::Vec2::splat(96.0)));
+                }
+                ui.label(egui::RichText::new("WiFi Spanner").heading());
+                ui.label(TAGLINE);
+                ui.weak(format!("Version {}", env!("CARGO_PKG_VERSION")));
+                ui.add_space(6.0);
+                ui.label("Copyright (C) 2026 rubble-za");
+                ui.hyperlink_to(REPO_URL, REPO_URL);
+                ui.add_space(6.0);
+                ui.weak(
+                    "Free software under the GNU General Public License, version 3 or later, with attribution \
+                     terms (see NOTICE). This program comes with ABSOLUTELY NO WARRANTY.",
+                );
+                ui.hyperlink_to("GNU General Public License", "https://www.gnu.org/licenses/gpl-3.0.html");
             });
-        self.about_open = open;
+            theme::actions(ui, |ui| {
+                if theme::button(ui, ButtonKind::Text, Some(ICON_CLOSE), "Close").clicked() {
+                    close = true;
+                }
+            });
+        });
+        if close {
+            self.about_open = false;
+        }
     }
 
     /// Push the current settings to the scanner thread and save them.
@@ -916,7 +921,7 @@ impl eframe::App for App {
 
         match self.tab {
             Tab::Live => {
-                egui::CentralPanel::default().show(ui, |ui| live::show(ui, self.latest.as_ref()));
+                egui::CentralPanel::default().frame(theme::page_frame(ui.ctx())).show(ui, |ui| live::show(ui, self.latest.as_ref()));
             }
             Tab::Floor => {
                 let env = floor::Env {
