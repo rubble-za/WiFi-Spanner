@@ -25,7 +25,7 @@ use eframe::egui;
 use settings::Settings;
 use theme::ButtonKind;
 use egui_material_icons::icons::{
-    ICON_CHECK, ICON_CLOSE, ICON_FOLDER, ICON_FOLDER_OPEN, ICON_IMAGE, ICON_INFO, ICON_POWER_SETTINGS_NEW, ICON_REFRESH, ICON_SETTINGS,
+    ICON_CLOSE, ICON_FOLDER, ICON_FOLDER_OPEN, ICON_IMAGE, ICON_INFO, ICON_POWER_SETTINGS_NEW, ICON_REFRESH, ICON_SETTINGS,
     ICON_SYSTEM_UPDATE, ICON_VIEW_LIST, ICON_WIFI,
 };
 use wifispanner_scan::dwell::scan_for_many;
@@ -353,13 +353,13 @@ impl App {
         }
         ui.menu_button(label(ui, Some(ICON_WIFI), "Adapters"), |ui| {
             let before = self.settings.card.clone();
-            let auto = theme::icon_label(ui, before.is_none().then_some(ICON_CHECK), "Auto (connected card)");
+            let auto = theme::check_label(ui, before.is_none(), "Auto (connected card)");
             if ui.selectable_label(before.is_none(), auto).clicked() {
                 self.settings.card = None;
             }
             for c in &self.cards {
                 let selected = before.as_ref() == Some(&c.name);
-                let text = theme::icon_label(ui, selected.then_some(ICON_CHECK), &c.label());
+                let text = theme::check_label(ui, selected, &c.label());
                 if ui.selectable_label(selected, text).clicked() {
                     self.settings.card = Some(c.name.clone());
                 }
@@ -379,7 +379,7 @@ impl App {
         ui.menu_button(label(ui, Some(ICON_VIEW_LIST), "Density"), |ui| {
             let before = self.settings.density;
             for d in theme::Density::ALL {
-                let text = theme::icon_label(ui, (before == d).then_some(ICON_CHECK), d.name());
+                let text = theme::check_label(ui, before == d, d.name());
                 if ui.selectable_label(before == d, text).clicked() {
                     self.settings.density = d;
                 }

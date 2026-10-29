@@ -491,7 +491,8 @@ impl FloorTab {
         match report::write_report(&path, project, &report::ReportStyle::from_settings(&self.view)) {
             Ok(file) => {
                 self.status = format!("Report saved: {}", file.display());
-                if let Err(e) = store::open_externally(&file) {
+                // Show the folder with the new report highlighted rather than opening it in a browser.
+                if let Err(e) = store::reveal(&file) {
                     self.status.push_str(&format!(" ({e})"));
                 }
             }

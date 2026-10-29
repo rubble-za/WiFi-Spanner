@@ -86,6 +86,16 @@ impl Density {
         }
     }
 
+    /// Scale of the project cards in the gallery.
+    pub fn card_scale(self) -> f32 {
+        match self {
+            Density::Compact => 0.7,
+            Density::Smaller => 0.85,
+            Density::Default => 1.0,
+            Density::Larger => 1.2,
+        }
+    }
+
     /// Multiplier for body text sizes.
     pub fn font_scale(self) -> f32 {
         match self {
@@ -365,42 +375,101 @@ pub enum ButtonKind {
     Text,
 }
 
+/// How a pill (a button or a chip) looks in each state.
+struct PillStyle {
+    rest: Color32,
+    hover: Color32,
+    press: Color32,
+    fg: Color32,
+    stroke: Stroke,
+}
+
+/// Vertical nudges, in points, that put the middle of the icon glyph and of
+/// the label's capital letters on the pill's centre line. Icon fonts and text
+/// fonts place their glyphs differently inside a line, so these were measured
+/// from screenshots rather than left to the layout.
+const ICON_NUDGE: f32 = -1.2;
+const TEXT_NUDGE: f32 = 0.8;
+
+/// Draw a pill: a rounded background with an optional leading icon and a
+/// label, both centred. Greys out when the `Ui` is disabled.
+fn pill(ui: &mut egui::Ui, style: PillStyle, icon: Option<egui_material_icons::MaterialIcon>, label: &str) -> egui::Response {
+    let r = roles(ui.ctx());
+    let height = density(ui.ctx()).button_height();
+    let font = TextStyle::Button.resolve(ui.style());
+    let text = ui.painter().layout_no_wrap(label.to_string(), font, style.fg);
+    let (pad, gap, icon_size) = ((height / 2.0).clamp(14.0, 20.0), 8.0, 20.0);
+    let icon_galley = icon.map(|i| ui.painter().layout_no_wrap(i.codepoint.to_string(), FontId::new(icon_size, i.font_family()), style.fg));
+    let icon_w = icon_galley.as_ref().map_or(0.0, |g| g.size().x + gap);
+    let content_w = icon_w + text.size().x;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2((content_w + 2.0 * pad).max(64.0), height), egui::Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
+    let radius = (height / 2.0).round() as u8;
+    let fill = if resp.is_pointer_button_down_on() {
+        style.press
+    } else if resp.hovered() {
+        style.hover
+    } else {
+        style.rest
+    };
+    let painter = ui.painter();
+    painter.rect(rect, radius, fill, style.stroke, egui::StrokeKind::Inside);
+    if resp.has_focus() {
+        painter.rect_stroke(rect.expand(2.0), radius + 2, Stroke::new(2.0, r.primary), egui::StrokeKind::Outside);
+    }
+    let mut x = rect.center().x - content_w / 2.0;
+    if let Some(g) = icon_galley {
+        let w = g.size().x;
+        painter.galley(egui::pos2(x, rect.center().y - g.size().y / 2.0 + ICON_NUDGE), g, style.fg);
+        x += w + gap;
+    }
+    painter.galley(egui::pos2(x, rect.center().y - text.size().y / 2.0 + TEXT_NUDGE), text, style.fg);
+    resp
+}
+
 /// A pill-shaped Material button, optionally with a leading icon. Greys out
 /// when the `Ui` is disabled (wrap in `add_enabled_ui`).
 pub fn button(ui: &mut egui::Ui, kind: ButtonKind, icon: Option<egui_material_icons::MaterialIcon>, label: &str) -> egui::Response {
     let r = roles(ui.ctx());
-    ui.scope(|ui| {
-        let v = ui.visuals_mut();
-        let (fill, fg, outline) = match kind {
-            ButtonKind::Filled => (r.primary, r.on_primary, None),
-            ButtonKind::Tonal => (r.secondary_container, r.on_secondary_container, None),
-            ButtonKind::Outlined => (Color32::TRANSPARENT, r.primary, Some(r.outline)),
-            ButtonKind::Text => (Color32::TRANSPARENT, r.primary, None),
-        };
-        let layer = |opacity: f32| match kind {
-            ButtonKind::Filled | ButtonKind::Tonal => state_layer(fill, fg, opacity),
-            ButtonKind::Outlined | ButtonKind::Text => r.primary.gamma_multiply(opacity),
-        };
-        let stroke = outline.map_or(Stroke::NONE, |c| Stroke::new(1.0, c));
-        for (w, fill) in [(&mut v.widgets.inactive, fill), (&mut v.widgets.hovered, layer(0.08)), (&mut v.widgets.active, layer(0.12))] {
-            w.weak_bg_fill = fill;
-            w.bg_fill = fill;
-            w.bg_stroke = stroke;
-            w.fg_stroke = Stroke::new(1.0, fg);
-            w.expansion = 0.0;
-        }
-        let font = TextStyle::Button.resolve(ui.style());
-        let mut job = egui::text::LayoutJob::default();
-        if let Some(icon) = icon {
-            job.append(icon.codepoint, 0.0, centred(FontId::new(20.0, icon.font_family()), fg));
-            job.append(label, 8.0, centred(font, fg));
-        } else {
-            job.append(label, 0.0, centred(font, fg));
-        }
-        let height = density(ui.ctx()).button_height();
-        ui.add(egui::Button::new(job).corner_radius((height / 2.0) as u8).min_size(egui::vec2(64.0, height)).wrap_mode(egui::TextWrapMode::Extend))
-    })
-    .inner
+    let (fill, fg, outline) = match kind {
+        ButtonKind::Filled => (r.primary, r.on_primary, None),
+        ButtonKind::Tonal => (r.secondary_container, r.on_secondary_container, None),
+        ButtonKind::Outlined => (Color32::TRANSPARENT, r.primary, Some(r.outline)),
+        ButtonKind::Text => (Color32::TRANSPARENT, r.primary, None),
+    };
+    let layer = |opacity: f32| match kind {
+        ButtonKind::Filled | ButtonKind::Tonal => state_layer(fill, fg, opacity),
+        ButtonKind::Outlined | ButtonKind::Text => r.primary.gamma_multiply(opacity),
+    };
+    let stroke = outline.map_or(Stroke::NONE, |c| Stroke::new(1.0, c));
+    pill(ui, PillStyle { rest: fill, hover: layer(0.08), press: layer(0.12), fg, stroke }, icon, label)
+}
+
+/// A Material chip, shaped and sized like the buttons: outlined at rest,
+/// filled with a check mark when selected. Use a row of them for a choice
+/// among a few options.
+pub fn chip(ui: &mut egui::Ui, selected: bool, icon: Option<egui_material_icons::MaterialIcon>, label: &str) -> egui::Response {
+    let r = roles(ui.ctx());
+    let (fill, fg, stroke) = if selected {
+        (r.secondary_container, r.on_secondary_container, Stroke::NONE)
+    } else {
+        (Color32::TRANSPARENT, r.on_surface_variant, Stroke::new(1.0, r.outline))
+    };
+    let layer = |opacity: f32| if selected { state_layer(fill, fg, opacity) } else { r.on_surface.gamma_multiply(opacity) };
+    let icon = if selected { Some(egui_material_icons::icons::ICON_CHECK) } else { icon };
+    pill(ui, PillStyle { rest: fill, hover: layer(0.08), press: layer(0.12), fg, stroke }, icon, label)
+}
+
+/// A menu entry with a check mark column that is invisible when unchecked, so
+/// every row has the identical layout whatever is selected.
+pub fn check_label(ui: &egui::Ui, checked: bool, label: &str) -> egui::text::LayoutJob {
+    let color = ui.visuals().text_color();
+    let check = if checked { color } else { Color32::TRANSPARENT };
+    let icon = egui_material_icons::icons::ICON_CHECK;
+    let mut job = egui::text::LayoutJob::default();
+    job.append(icon.codepoint, 0.0, centred(FontId::new(20.0, icon.font_family()), check));
+    job.append(label, 12.0, centred(TextStyle::Body.resolve(ui.style()), color));
+    job
 }
 
 /// Text with an optional leading Material icon, for menu entries. With no icon
@@ -417,40 +486,6 @@ pub fn icon_label(ui: &egui::Ui, icon: Option<egui_material_icons::MaterialIcon>
         None => job.append(label, 32.0, centred(body, color)),
     }
     job
-}
-
-/// A Material chip, shaped and sized like the buttons: outlined at rest, filled with a check mark
-/// when selected. Use a row of them for a choice among a few options.
-pub fn chip(ui: &mut egui::Ui, selected: bool, icon: Option<egui_material_icons::MaterialIcon>, label: &str) -> egui::Response {
-    let r = roles(ui.ctx());
-    ui.scope(|ui| {
-        let v = ui.visuals_mut();
-        let (fill, fg, stroke) = if selected {
-            (r.secondary_container, r.on_secondary_container, Stroke::NONE)
-        } else {
-            (Color32::TRANSPARENT, r.on_surface_variant, Stroke::new(1.0, r.outline))
-        };
-        let layer = |opacity: f32| if selected { state_layer(fill, fg, opacity) } else { r.on_surface.gamma_multiply(opacity) };
-        for (w, fill) in [(&mut v.widgets.inactive, fill), (&mut v.widgets.hovered, layer(0.08)), (&mut v.widgets.active, layer(0.12))] {
-            w.weak_bg_fill = fill;
-            w.bg_fill = fill;
-            w.bg_stroke = stroke;
-            w.fg_stroke = Stroke::new(1.0, fg);
-            w.expansion = 0.0;
-        }
-        let icon = if selected { Some(egui_material_icons::icons::ICON_CHECK) } else { icon };
-        let font = TextStyle::Button.resolve(ui.style());
-        let mut job = egui::text::LayoutJob::default();
-        if let Some(icon) = icon {
-            job.append(icon.codepoint, 0.0, centred(FontId::new(20.0, icon.font_family()), fg));
-            job.append(label, 8.0, centred(font, fg));
-        } else {
-            job.append(label, 0.0, centred(font, fg));
-        }
-        let height = density(ui.ctx()).button_height();
-        ui.add(egui::Button::new(job).corner_radius((height / 2.0) as u8).min_size(egui::vec2(64.0, height)).wrap_mode(egui::TextWrapMode::Extend))
-    })
-    .inner
 }
 
 /// A Material snackbar: a short message near the bottom of the window.

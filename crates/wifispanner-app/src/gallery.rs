@@ -141,7 +141,8 @@ impl Gallery {
         match project.and_then(|p| report::write_report(path, &p, style)) {
             Ok(file) => {
                 self.status = format!("Report saved: {}", file.display());
-                if let Err(e) = store::open_externally(&file) {
+                // Show the folder with the new report highlighted rather than opening it in a browser.
+                if let Err(e) = store::reveal(&file) {
                     self.status.push_str(&format!(" ({e})"));
                 }
             }
@@ -157,6 +158,8 @@ impl Gallery {
         self.poll(ui.ctx());
         let mut action = None;
         let mut menu_choice: Option<(PathBuf, MenuChoice)> = None;
+        // Cards grow and shrink with the density setting.
+        let scale = theme::density(ui.ctx()).card_scale();
         egui::CentralPanel::default().frame(theme::page_frame(ui.ctx())).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Projects").size(24.0));
@@ -184,13 +187,13 @@ impl Gallery {
             ui.add_space(12.0);
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = Vec2::splat(GAP);
-                    if new_card(ui).clicked() {
+                    ui.spacing_mut().item_spacing = Vec2::splat(GAP * scale);
+                    if new_card(ui, scale).clicked() {
                         action = Some(GalleryAction::New);
                     }
                     for e in &self.entries {
                         let summary = self.loaded.get(&e.path).map(|(_, s)| s);
-                        let card = project_card(ui, e, summary, self.thumbs.get(&e.path));
+                        let card = project_card(ui, e, summary, self.thumbs.get(&e.path), scale);
                         if card.open {
                             action = Some(GalleryAction::Open(e.path.clone()));
                         }
@@ -249,6 +252,11 @@ impl Gallery {
                                 {
                                     self.status = e;
                                 }
+                                if theme::button(ui, ButtonKind::Text, Some(ICON_FOLDER), "Show").clicked()
+                                    && let Err(e) = store::reveal(&r.path)
+                                {
+                                    self.status = e;
+                                }
                             });
                         });
                     });
@@ -290,86 +298,88 @@ struct CardResult {
 }
 
 /// The "New project" tile.
-fn new_card(ui: &mut egui::Ui) -> egui::Response {
+fn new_card(ui: &mut egui::Ui, s: f32) -> egui::Response {
     let r = theme::roles(ui.ctx());
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(CARD_W, CARD_H), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(CARD_W, CARD_H) * s, Sense::click());
     let painter = ui.painter();
-    painter.rect_stroke(rect, 12.0, Stroke::new(1.5, r.outline), egui::StrokeKind::Inside);
+    painter.rect_stroke(rect, 12.0 * s, Stroke::new(1.5, r.outline), egui::StrokeKind::Inside);
     if resp.hovered() {
-        painter.rect_filled(rect, 12.0, r.primary.gamma_multiply(0.08));
+        painter.rect_filled(rect, 12.0 * s, r.primary.gamma_multiply(0.08));
     }
     painter.text(
-        rect.center() - Vec2::new(0.0, 14.0),
+        rect.center() - Vec2::new(0.0, 14.0 * s),
         egui::Align2::CENTER_CENTER,
         ICON_ADD.codepoint,
-        egui::FontId::new(56.0, ICON_ADD.font_family()),
+        egui::FontId::new(56.0 * s, ICON_ADD.font_family()),
         r.primary,
     );
     painter.text(
-        rect.center() + Vec2::new(0.0, 36.0),
+        rect.center() + Vec2::new(0.0, 36.0 * s),
         egui::Align2::CENTER_CENTER,
         "New project",
-        egui::FontId::new(15.0, egui::FontFamily::Name("roboto-medium".into())),
+        egui::FontId::new(15.0 * s, egui::FontFamily::Name("roboto-medium".into())),
         r.on_surface,
     );
     painter.text(
-        rect.center() + Vec2::new(0.0, 58.0),
+        rect.center() + Vec2::new(0.0, 58.0 * s),
         egui::Align2::CENTER_CENTER,
         "from a floor plan",
-        egui::FontId::new(13.0, egui::FontFamily::Proportional),
+        egui::FontId::new(13.0 * s, egui::FontFamily::Proportional),
         r.on_surface_variant,
     );
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-fn project_card(ui: &mut egui::Ui, e: &Entry, summary: Option<&Summary>, thumb: Option<&TextureHandle>) -> CardResult {
+fn project_card(ui: &mut egui::Ui, e: &Entry, summary: Option<&Summary>, thumb: Option<&TextureHandle>, s: f32) -> CardResult {
     let r = theme::roles(ui.ctx());
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(CARD_W, CARD_H), Sense::click());
+    let (card_w, thumb_h) = (CARD_W * s, THUMB_H * s);
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(CARD_W, CARD_H) * s, Sense::click());
     let painter = ui.painter();
-    painter.rect(rect, 12.0, r.surface_container_low, Stroke::new(1.0, r.outline_variant), egui::StrokeKind::Inside);
+    painter.rect(rect, 12.0 * s, r.surface_container_low, Stroke::new(1.0, r.outline_variant), egui::StrokeKind::Inside);
     if resp.hovered() {
-        painter.rect_filled(rect, 12.0, r.on_surface.gamma_multiply(0.06));
+        painter.rect_filled(rect, 12.0 * s, r.on_surface.gamma_multiply(0.06));
     }
 
     // Thumbnail of the floor plan, fitted inside its well.
-    let well = Rect::from_min_size(rect.min + Vec2::splat(10.0), Vec2::new(CARD_W - 20.0, THUMB_H));
-    painter.rect_filled(well, CornerRadius::same(8), r.surface_container_lowest);
+    let inset = 10.0 * s;
+    let well = Rect::from_min_size(rect.min + Vec2::splat(inset), Vec2::new(card_w - 2.0 * inset, thumb_h));
+    painter.rect_filled(well, CornerRadius::same((8.0 * s) as u8), r.surface_container_lowest);
     match thumb {
         Some(tex) => {
             let size = tex.size_vec2();
-            let scale = (well.width() / size.x).min(well.height() / size.y);
-            let fitted = Rect::from_center_size(well.center(), size * scale);
+            let fit = (well.width() / size.x).min(well.height() / size.y);
+            let fitted = Rect::from_center_size(well.center(), size * fit);
             painter.image(tex.id(), fitted, Rect::from_min_max(Pos2::ZERO, egui::pos2(1.0, 1.0)), Color32::WHITE);
         }
         None => {
             let icon = if summary.is_some_and(|s| s.error.is_some()) { ICON_DESCRIPTION } else { ICON_IMAGE };
-            painter.text(well.center(), egui::Align2::CENTER_CENTER, icon.codepoint, egui::FontId::new(40.0, icon.font_family()), r.outline_variant);
+            painter.text(well.center(), egui::Align2::CENTER_CENTER, icon.codepoint, egui::FontId::new(40.0 * s, icon.font_family()), r.outline_variant);
         }
     }
 
     // Name (one line, ellipsised) and details.
-    let text_w = CARD_W - 20.0 - 36.0;
-    let mut name = egui::text::LayoutJob::simple(e.name.clone(), egui::FontId::new(15.0, egui::FontFamily::Name("roboto-medium".into())), r.on_surface, text_w);
+    let text_w = card_w - 2.0 * inset - 36.0 * s;
+    let mut name = egui::text::LayoutJob::simple(e.name.clone(), egui::FontId::new(15.0 * s, egui::FontFamily::Name("roboto-medium".into())), r.on_surface, text_w);
     name.wrap.max_rows = 1;
     name.wrap.break_anywhere = true;
     name.wrap.overflow_character = Some('…');
-    painter.galley(rect.min + Vec2::new(12.0, THUMB_H + 20.0), painter.layout_job(name), r.on_surface);
+    painter.galley(rect.min + Vec2::new(12.0 * s, thumb_h + 20.0 * s), painter.layout_job(name), r.on_surface);
     let details = match summary {
         Some(s) if s.error.is_some() => "Could not be read".to_string(),
         Some(s) => format!("{} points  ·  {}", s.points, e.modified.map_or("unknown".into(), time_ago)),
         None => "Loading...".to_string(),
     };
-    let mut detail_job = egui::text::LayoutJob::simple(details, egui::FontId::new(13.0, egui::FontFamily::Proportional), r.on_surface_variant, text_w);
+    let mut detail_job = egui::text::LayoutJob::simple(details, egui::FontId::new(13.0 * s, egui::FontFamily::Proportional), r.on_surface_variant, text_w);
     detail_job.wrap.max_rows = 1;
-    painter.galley(rect.min + Vec2::new(12.0, THUMB_H + 42.0), painter.layout_job(detail_job), r.on_surface_variant);
+    painter.galley(rect.min + Vec2::new(12.0 * s, thumb_h + 42.0 * s), painter.layout_job(detail_job), r.on_surface_variant);
 
     // The "..." menu sits on top of the card, so it gets its clicks first.
-    let more_rect = Rect::from_min_size(rect.right_bottom() - Vec2::new(44.0, 52.0), Vec2::splat(36.0));
+    let more_rect = Rect::from_min_size(rect.right_bottom() - Vec2::new(44.0, 52.0) * s, Vec2::splat(36.0 * s));
     let more = ui.interact(more_rect, resp.id.with("more"), Sense::click());
     if more.hovered() || more.is_pointer_button_down_on() {
         painter_circle(ui, more_rect, r.on_surface.gamma_multiply(0.1));
     }
-    ui.painter().text(more_rect.center(), egui::Align2::CENTER_CENTER, ICON_MORE_VERT.codepoint, egui::FontId::new(22.0, ICON_MORE_VERT.font_family()), r.on_surface_variant);
+    ui.painter().text(more_rect.center(), egui::Align2::CENTER_CENTER, ICON_MORE_VERT.codepoint, egui::FontId::new(22.0 * s, ICON_MORE_VERT.font_family()), r.on_surface_variant);
     let mut menu = None;
     let usable = summary.is_some_and(|s| s.error.is_none());
     egui::Popup::menu(&more).show(|ui| {

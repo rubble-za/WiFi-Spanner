@@ -104,6 +104,46 @@ pub fn open_externally(path: &Path) -> Result<(), String> {
         .map_err(|e| format!("could not run xdg-open: {e}"))
 }
 
+/// `file://` URI for a path, percent-encoding everything but the unreserved
+/// characters and `/`.
+fn file_uri(path: &Path) -> String {
+    let mut out = String::from("file://");
+    for b in path.to_string_lossy().bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => out.push(b as char),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// Show `path` in the file manager with the file itself highlighted, through
+/// the freedesktop `FileManager1` service (Dolphin, Nautilus and others). If
+/// that is not available, open the folder instead.
+pub fn reveal(path: &Path) -> Result<(), String> {
+    let shown = Command::new("dbus-send")
+        .args([
+            "--session",
+            "--print-reply",
+            "--reply-timeout=3000",
+            "--dest=org.freedesktop.FileManager1",
+            "--type=method_call",
+            "/org/freedesktop/FileManager1",
+            "org.freedesktop.FileManager1.ShowItems",
+        ])
+        .arg(format!("array:string:{}", file_uri(path)))
+        .arg("string:wifispanner")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    if shown {
+        return Ok(());
+    }
+    open_externally(path.parent().unwrap_or(path))
+}
+
 /// Local time via the system `date`, since the app has no time zone data.
 pub fn format_unix(unix_secs: u64, format: &str) -> String {
     Command::new("date")
@@ -136,5 +176,12 @@ mod tests {
     #[test]
     fn reports_folder_sits_beside_the_project() {
         assert_eq!(reports_dir(Path::new("/a/b/Office.wifispanner")), PathBuf::from("/a/b/Office-reports"));
+    }
+
+    #[test]
+    fn file_uris_are_percent_encoded() {
+        assert_eq!(file_uri(Path::new("/home/me/My Reports/r-1.html")), "file:///home/me/My%20Reports/r-1.html");
+        assert_eq!(file_uri(Path::new("/a/ü.html")), "file:///a/%C3%BC.html");
+        assert_eq!(file_uri(Path::new("/a/b&c#d")), "file:///a/b%26c%23d");
     }
 }
