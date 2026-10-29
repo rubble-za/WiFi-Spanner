@@ -266,6 +266,8 @@ impl FloorTab {
             let height = (ctx.content_rect().height() - 320.0).clamp(180.0, 520.0);
             egui::ScrollArea::vertical().max_height(height).auto_shrink([false, true]).show(ui, |ui| {
                 ui.spacing_mut().item_spacing = Vec2::splat(PICKER_GAP);
+                // Room above the first row so the selection ring is not clipped.
+                ui.add_space(5.0);
                 for first in (0..count).step_by(PICKER_COLUMNS) {
                     ui.horizontal(|ui| {
                         for i in first..(first + PICKER_COLUMNS).min(count) {
@@ -276,7 +278,14 @@ impl FloorTab {
                                     Some(t) => ui.add(egui::Button::image(egui::Image::new(t).max_size(size)).selected(selected).min_size(size)),
                                     None => ui.add_sized(size, egui::Button::new("Loading...").selected(selected)),
                                 };
-                                ui.label(format!("Page {}", i + 1));
+                                if selected {
+                                    // A bold ring in the primary colour, so the chosen page is unmistakable.
+                                    let primary = theme::roles(ui.ctx()).primary;
+                                    ui.painter().rect_stroke(resp.rect.expand(1.5), 20.0, Stroke::new(3.0, primary), egui::StrokeKind::Outside);
+                                    ui.label(theme::medium(format!("Page {}", i + 1)).color(primary));
+                                } else {
+                                    ui.label(format!("Page {}", i + 1));
+                                }
                                 if resp.clicked() {
                                     picker.selected = i;
                                 }
