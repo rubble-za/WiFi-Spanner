@@ -757,7 +757,7 @@ impl FloorTab {
                             ui.label(egui::RichText::new(format!("Overlay: {}", p.floors[o].name)).text_style(egui::TextStyle::Body));
                             let mut a = self.overlay_opacity;
                             ui.spacing_mut().slider_width = 130.0;
-                            if ui.add(egui::Slider::new(&mut a, 0.1..=1.0).text("Opacity")).changed() {
+                            if theme::slider_f32(ui, &mut a, 0.1..=1.0, 2, "Opacity") {
                                 edits.push(FloorEdit::Opacity(a));
                             }
                             if theme::chip(ui, self.tool == Tool::Align, Some(ICON_OPEN_WITH), "Align").clicked() {
@@ -1027,9 +1027,9 @@ impl FloorTab {
                     }
                 });
             ui.spacing_mut().slider_width = 160.0;
-            ui.add(egui::Slider::new(&mut self.opacity, 0.1..=1.0).text("Opacity"));
+            theme::slider_f32(ui, &mut self.opacity, 0.1..=1.0, 2, "Opacity");
             if floor.metres_per_px.is_some() {
-                changed |= ui.add(egui::Slider::new(&mut self.fade_m, 2.0..=30.0).text("Fade (m)")).changed();
+                changed |= theme::slider_f32(ui, &mut self.fade_m, 2.0..=30.0, 1, "Fade (m)");
             }
         });
         if changed {
@@ -1054,7 +1054,7 @@ impl FloorTab {
                 changed |= ui.add(egui::DragValue::new(&mut self.rx_height).range(0.0..=10.0).speed(0.05).suffix(" m").fixed_decimals(2)).changed();
             });
             ui.spacing_mut().slider_width = 160.0;
-            ui.add(egui::Slider::new(&mut self.opacity, 0.1..=1.0).text("Opacity"));
+            theme::slider_f32(ui, &mut self.opacity, 0.1..=1.0, 2, "Opacity");
         });
         if changed {
             self.pred_dirty = true;

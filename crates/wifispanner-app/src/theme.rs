@@ -361,6 +361,64 @@ pub fn shadow(color: Color32, blur: u8, alpha: f32) -> egui::Shadow {
 }
 
 /// Medium-weight text, for headers and labels that need emphasis.
+/// A slider with its value beside it for typing, and a label. The rail is
+/// drawn here, rather than by egui, so that the fill ends exactly under the
+/// handle and the handle can be dragged to both ends. Returns whether the
+/// value changed. With `decimals` 0 the value is a whole number.
+pub fn slider(ui: &mut egui::Ui, value: &mut f64, range: std::ops::RangeInclusive<f64>, decimals: usize, label: &str) -> bool {
+    let r = roles(ui.ctx());
+    let (lo, hi) = (*range.start(), *range.end());
+    let scale = density(ui.ctx()).font_scale();
+    let (handle_r, rail_h) = (8.0 * scale, 4.0);
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        let width = ui.spacing().slider_width;
+        let height = (handle_r * 2.0 + 6.0).max(ui.spacing().interact_size.y);
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click_and_drag());
+        let (x0, x1) = (rect.left() + handle_r, rect.right() - handle_r);
+        if let Some(p) = resp.interact_pointer_pos().filter(|_| resp.dragged() || resp.clicked()) {
+            let t = (((p.x - x0) / (x1 - x0)) as f64).clamp(0.0, 1.0);
+            let mut v = lo + t * (hi - lo);
+            if decimals == 0 {
+                v = v.round();
+            }
+            if v != *value {
+                *value = v;
+                changed = true;
+            }
+        }
+        let t = ((*value - lo) / (hi - lo)).clamp(0.0, 1.0) as f32;
+        let (cx, cy) = (x0 + t * (x1 - x0), rect.center().y);
+        let rail = egui::Rect::from_min_max(egui::pos2(rect.left(), cy - rail_h / 2.0), egui::pos2(rect.right(), cy + rail_h / 2.0));
+        let painter = ui.painter();
+        painter.rect_filled(rail, rail_h / 2.0, r.outline_variant);
+        painter.rect_filled(egui::Rect::from_min_max(rail.min, egui::pos2(cx, rail.max.y)), rail_h / 2.0, r.primary);
+        let grow = if resp.dragged() { 2.0 } else if resp.hovered() { 1.0 } else { 0.0 };
+        painter.circle_filled(egui::pos2(cx, cy), handle_r + grow, r.primary);
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        let mut v = *value;
+        let speed = (hi - lo) / 200.0;
+        if ui.add(egui::DragValue::new(&mut v).range(lo..=hi).speed(speed).fixed_decimals(decimals)).changed() {
+            *value = v;
+            changed = true;
+        }
+        ui.label(label);
+    });
+    changed
+}
+
+/// [`slider`] for an `f32`.
+pub fn slider_f32(ui: &mut egui::Ui, value: &mut f32, range: std::ops::RangeInclusive<f32>, decimals: usize, label: &str) -> bool {
+    let mut v = *value as f64;
+    let changed = slider(ui, &mut v, *range.start() as f64..=*range.end() as f64, decimals, label);
+    if changed {
+        *value = v as f32;
+    }
+    changed
+}
+
 /// A heading inside a menu: the body size in the medium weight, in the accent colour.
 pub fn heading(ui: &egui::Ui, text: impl Into<String>) -> egui::RichText {
     let size = TextStyle::Body.resolve(ui.style()).size;

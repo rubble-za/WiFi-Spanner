@@ -197,9 +197,7 @@ fn heatmap_section(ui: &mut egui::Ui, s: &mut Settings) {
 }
 
 fn signal_slider(ui: &mut egui::Ui, label: &str, value: &mut f64, lo: f64, hi: f64) {
-    ui.horizontal(|ui| {
-        ui.add(egui::Slider::new(value, lo..=hi).integer().text(label));
-    });
+    crate::theme::slider(ui, value, lo..=hi, 0, label);
 }
 
 /// A selectable colour-ramp preview.
