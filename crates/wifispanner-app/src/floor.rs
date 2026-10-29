@@ -1542,7 +1542,7 @@ impl FloorTab {
                     .fill(r.surface_container_high)
                     .stroke(Stroke::new(1.0, r.outline_variant))
                     .corner_radius(20)
-                    .inner_margin(14)
+                    .inner_margin(10)
                     .shadow(theme::shadow(r.shadow, 16, 0.18))
                     .show(ui, |ui| {
                         let room = (canvas.height() - right_top(ctx) - 28.0).max(160.0);
@@ -1581,11 +1581,10 @@ impl FloorTab {
             }
         });
         let how = match self.wall_mode {
-            WallMode::Wall => "Click to place the start of a wall, then its end.",
-            WallMode::Room => "Click one corner of the room, then the opposite corner.",
+            WallMode::Wall => "Click the start, then the end.",
+            WallMode::Room => "Click two opposite corners.",
         };
-        ui.label(egui::RichText::new(format!("{how} Esc or right-click cancels, hold Shift to disable snapping.")).text_style(egui::TextStyle::Body).color(r.on_surface_variant));
-        ui.add_space(4.0);
+        ui.label(egui::RichText::new(format!("{how} Esc cancels.")).text_style(egui::TextStyle::Body).color(r.on_surface_variant)).on_hover_text("Right-click also cancels. Hold Shift to turn snapping off.");
         self.material_rows(ui, Some(self.wall_material), edits);
         self.wall_height_controls(ui, floor, Some(self.wall_height), false, edits);
         ui.add_space(6.0);
@@ -1602,7 +1601,7 @@ impl FloorTab {
         let areas: Vec<&Area> = self.selected_areas.iter().filter_map(|&i| floor.areas.get(i)).collect();
         ui.label(theme::heading(ui, "Select"));
         if walls.is_empty() && aps.is_empty() && areas.is_empty() {
-            ui.label(egui::RichText::new("Click a wall, an area or a device, or drag a box over several. Ctrl or Shift adds to the selection, Ctrl+A selects everything.").text_style(egui::TextStyle::Body).color(r.on_surface_variant));
+            ui.label(egui::RichText::new("Click, or drag a box. Ctrl adds.").text_style(egui::TextStyle::Body).color(r.on_surface_variant)).on_hover_text("Click a wall, area or device, or drag a box over several. Ctrl or Shift adds to the selection, Ctrl+A selects everything.");
             return;
         }
         if !walls.is_empty() {
@@ -1690,8 +1689,6 @@ impl FloorTab {
     fn obstacles_content(&self, ui: &mut egui::Ui, floor: &Floor, edits: &mut Vec<WallEdit>) {
         let r = theme::roles(ui.ctx());
         ui.label(theme::heading(ui, "Obstacle Areas"));
-        ui.label(egui::RichText::new("Signal loses the dB per metre listed for the stretch it passes through, below the area's height.").text_style(egui::TextStyle::Body).color(r.on_surface_variant));
-        ui.add_space(4.0);
         ui.horizontal(|ui| {
             if theme::chip(ui, self.area_mode == AreaMode::Rectangle, Some(ICON_CROP_FREE), "Rectangle").clicked() {
                 edits.push(WallEdit::AreaMode(AreaMode::Rectangle));
@@ -1701,11 +1698,10 @@ impl FloorTab {
             }
         });
         let how = match self.area_mode {
-            AreaMode::Rectangle => "Click one corner, then the opposite corner.",
-            AreaMode::Polygon => "Click each corner. Double-click, Enter, or a click on the first corner closes it.",
+            AreaMode::Rectangle => "Click two opposite corners.",
+            AreaMode::Polygon => "Click each corner; double-click closes.",
         };
-        ui.label(egui::RichText::new(format!("{how} Esc or right-click cancels.")).text_style(egui::TextStyle::Body).color(r.on_surface_variant));
-        ui.add_space(4.0);
+        ui.label(egui::RichText::new(how).text_style(egui::TextStyle::Body).color(r.on_surface_variant)).on_hover_text("Signal loses the dB per metre listed for the stretch it passes through, below the area's height. Enter also closes a polygon; Esc or right-click cancels.");
         self.kind_rows(ui, Some(self.obstacle_kind), edits);
         self.area_height_controls(ui, floor, Some(self.obstacle_height), false, edits);
         ui.add_space(6.0);
@@ -1729,8 +1725,7 @@ impl FloorTab {
     fn client_content(&self, ui: &mut egui::Ui, floor: &Floor, edits: &mut Vec<WallEdit>) {
         let r = theme::roles(ui.ctx());
         ui.label(theme::heading(ui, "Client Experience"));
-        ui.label(egui::RichText::new("Click or drag on the plan to put a client down. Pan with the right mouse button.").text_style(egui::TextStyle::Body).color(r.on_surface_variant));
-        ui.add_space(4.0);
+        ui.label(egui::RichText::new("Click or drag on the plan.").text_style(egui::TextStyle::Body).color(r.on_surface_variant)).on_hover_text("Pan with the right mouse button while the client tool is active.");
         egui::ComboBox::from_id_salt("client_kind").selected_text(CLIENTS[self.client_kind].0).width(220.0).show_ui(ui, |ui| {
             for (i, (name, _)) in CLIENTS.iter().enumerate() {
                 if ui.selectable_label(self.client_kind == i, *name).clicked() {
@@ -1768,7 +1763,6 @@ impl FloorTab {
             }
             _ => {
                 ui.label(egui::RichText::new("No WiFi coverage").strong().color(r.error));
-                ui.label(egui::RichText::new("Move the client closer to an access point with a radio on one of its bands.").text_style(egui::TextStyle::Body).color(r.on_surface_variant));
             }
         }
         ui.add_space(6.0);
@@ -1801,8 +1795,7 @@ impl FloorTab {
         let (installed, planned) = (layer.iter().filter(|a| a.existing).count(), layer.iter().filter(|a| !a.existing).count());
         let counts = if self.mode == WorkMode::Plan { format!("{installed} from the survey, {planned} planned on this floor") } else { format!("{installed} installed access points plotted on this floor") };
         ui.label(egui::RichText::new(counts).text_style(egui::TextStyle::Body).color(r.on_surface_variant));
-        ui.label(egui::RichText::new("Pick a model, then click the plan to place it. Drag a device to move it.").text_style(egui::TextStyle::Body).color(r.on_surface_variant));
-        ui.add_space(4.0);
+        ui.label(egui::RichText::new("Pick a model, then click the plan.").text_style(egui::TextStyle::Body).color(r.on_surface_variant)).on_hover_text("Drag a placed device to move it.");
         let mut search = self.model_search.clone();
         if ui.add(egui::TextEdit::singleline(&mut search).hint_text("Search").desired_width(f32::INFINITY)).changed() {
             edits.push(ApEdit::Search(search));
@@ -1821,24 +1814,28 @@ impl FloorTab {
             edits.push(ApEdit::Template(None));
         }
         // Below the title, counts, hint, search and the custom row.
-        let list_height = (room - 190.0).max(120.0);
+        let list_height = (room - 150.0).max(120.0);
         egui::ScrollArea::vertical().max_height(list_height).auto_shrink([false, false]).show(ui, |ui| {
             for m in catalog::search(&self.models, &self.model_search) {
                 let on = current.as_deref() == Some(m.id().as_str());
-                let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 46.0 * theme::density(ui.ctx()).font_scale()), Sense::click());
+                let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0 * theme::density(ui.ctx()).font_scale()), Sense::click());
                 if on {
                     ui.painter().rect_filled(rect, 8.0, r.secondary_container);
                 } else if resp.hovered() {
                     ui.painter().rect_filled(rect, 8.0, theme::state_layer(Color32::TRANSPARENT, r.on_surface, 0.08));
                 }
-                ui.painter().text(rect.left_top() + Vec2::new(10.0, 6.0), egui::Align2::LEFT_TOP, &m.name, egui::TextStyle::Body.resolve(ui.style()), r.on_surface);
+                let body = egui::TextStyle::Body.resolve(ui.style());
+                // The bands on the right; the maker's name and how far to trust the figures on hover.
                 let bands: Vec<&str> = m.radios.iter().map(|rd| match rd.band {
                     RadioBand::Ghz2_4 => "2.4",
                     RadioBand::Ghz5 => "5",
                     RadioBand::Ghz6 => "6",
                 }).collect();
-                let sub = format!("{} GHz  |  {}  |  {}", bands.join(" + "), m.vendor, if m.verified { "from maker's specs" } else { "typical" });
-                ui.painter().text(rect.left_top() + Vec2::new(10.0, 25.0), egui::Align2::LEFT_TOP, sub, egui::TextStyle::Body.resolve(ui.style()), r.on_surface_variant);
+                let tags = ui.painter().text(rect.right_center() - Vec2::new(10.0, 0.0), egui::Align2::RIGHT_CENTER, bands.join(" "), body.clone(), r.on_surface_variant);
+                let name_room = (tags.left() - rect.left() - 20.0).max(40.0);
+                let galley = ui.painter().layout(m.name.clone(), body, r.on_surface, name_room);
+                ui.painter().galley(rect.left_center() + Vec2::new(10.0, -galley.size().y / 2.0), galley, r.on_surface);
+                let resp = resp.on_hover_text(format!("{}  |  {}  |  {}", m.id(), m.note, if m.verified { "figures from the maker's specs" } else { "typical figures" }));
                 if resp.clicked() {
                     edits.push(ApEdit::Template(Some(m.clone())));
                 }
