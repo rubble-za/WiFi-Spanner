@@ -20,7 +20,7 @@ use wifispanner_scan::{Band, ScanResult};
 
 use crate::settings::Settings;
 use crate::theme::{self, ButtonKind};
-use egui_material_icons::icons::{ICON_ADD, ICON_ARCHITECTURE, ICON_ARROW_SELECTOR_TOOL, ICON_CATEGORY, ICON_CROP_FREE, ICON_EDIT, ICON_ROUTER, ICON_SMARTPHONE, ICON_ARROW_BACK, ICON_OPEN_WITH, ICON_RESTART_ALT, ICON_VISIBILITY, ICON_VISIBILITY_OFF, ICON_DELETE, ICON_DESCRIPTION, ICON_FOLDER_OPEN, ICON_IMAGE, ICON_PLACE, ICON_SAVE, ICON_STRAIGHTEN, ICON_UNDO};
+use egui_material_icons::icons::{ICON_ADD, ICON_ARCHITECTURE, ICON_ARROW_SELECTOR_TOOL, ICON_SETTINGS, ICON_CATEGORY, ICON_CROP_FREE, ICON_EDIT, ICON_ROUTER, ICON_SMARTPHONE, ICON_ARROW_BACK, ICON_OPEN_WITH, ICON_RESTART_ALT, ICON_VISIBILITY, ICON_VISIBILITY_OFF, ICON_DELETE, ICON_DESCRIPTION, ICON_FOLDER_OPEN, ICON_IMAGE, ICON_PLACE, ICON_SAVE, ICON_STRAIGHTEN, ICON_UNDO};
 use crate::{Cmd, pdf, report, store};
 use crate::live::signal_color;
 
@@ -88,7 +88,7 @@ const AP_PICK_PX: f32 = 16.0;
 const LAYERS_ICON: &[u8] = include_bytes!("../assets/layers.png");
 const LAYERS_BUTTON: f32 = 44.0;
 /// How far down the right edge the bubbles start, below the floors button.
-const RIGHT_BUBBLES_TOP: f32 = 12.0 + LAYERS_BUTTON + 8.0;
+const RIGHT_BUBBLES_TOP: f32 = 12.0 + 2.0 * LAYERS_BUTTON + 16.0;
 
 /// The scale (metres per plan pixel) implied by `metres` between two points
 /// `px_apart` pixels apart on a plan of `w` x `h` pixels, or why it is not
@@ -160,6 +160,8 @@ pub struct FloorTab {
     rename: Option<String>,
     /// The floors panel is showing, and the picture on the button that opens it.
     floors_open: bool,
+    /// The Add Devices menu is showing (it sits behind its own button).
+    devices_open: bool,
     layers_icon: Option<TextureHandle>,
     /// Wall drawing: the material and height for the next wall, where the wall
     /// being drawn started, and the wall picked in the list.
@@ -347,6 +349,7 @@ impl Default for FloorTab {
             adding_floor: false,
             rename: None,
             floors_open: false,
+            devices_open: false,
             layers_icon: None,
             wall_material: Material::Concrete,
             wall_height: Material::Concrete.default_height_m(),
@@ -886,83 +889,147 @@ impl FloorTab {
         let ctx = ui.ctx().clone();
         // Fields in the bars are as tall as the buttons for the chosen density.
         ui.spacing_mut().interact_size.y = theme::density(&ctx).button_height();
-        ui.horizontal_wrapped(|ui| {
-            if theme::button(ui, ButtonKind::Text, Some(ICON_ARROW_BACK), "Projects").clicked() {
-                self.back = true;
-            }
-            ui.separator();
-            if theme::button(ui, ButtonKind::Tonal, Some(ICON_IMAGE), "Open floor plan").clicked() {
-                self.pick_plan(&ctx);
-            }
-            if theme::button(ui, ButtonKind::Tonal, Some(ICON_FOLDER_OPEN), "Open project").clicked() {
-                self.pick_project(&ctx);
-            }
-            ui.add_enabled_ui(self.project.is_some(), |ui| {
-                if theme::button(ui, ButtonKind::Tonal, Some(ICON_SAVE), "Save").clicked() {
-                    match self.path.clone() {
-                        Some(p) => self.save_to(&p),
-                        None => self.save_as(),
-                    }
-                }
-                if theme::button(ui, ButtonKind::Text, None, "Save as...").clicked() {
-                    self.save_as();
-                }
-                if self.mode == WorkMode::Survey {
-                    let has_points = self.project.as_ref().is_some_and(|p| !p.floor().points.is_empty());
-                    let report = ui.add_enabled_ui(has_points, |ui| theme::button(ui, ButtonKind::Filled, Some(ICON_DESCRIPTION), "Generate report")).inner;
-                    if report.clicked() {
-                        self.make_report();
-                    }
-                }
-            });
-        });
-
-        if self.mode == WorkMode::Plan {
-            return self.plan_row(ui);
-        }
-        let Some(floor) = self.project.as_ref().map(|p| p.floor()) else { return };
-        let (tool, survey) = (self.tool, self.mode == WorkMode::Survey);
-        let mut picked = None;
-        ui.horizontal_wrapped(|ui| {
-            picked = Self::tool_chips(ui, tool, survey, true);
-            ui.separator();
-            let mut changed = theme::switch_row(ui, &mut self.show_heat, "Heatmap").changed();
-            ui.add_enabled_ui(self.show_heat, |ui| {
-                ui.label("Show");
-                let label = match &self.target {
-                    Target::Any => "Strongest of any AP".to_string(),
-                    Target::Ssid(s) => format!("SSID: {s}"),
-                    Target::Bssid(b) => format!("AP: {b}"),
-                };
-                egui::ComboBox::from_id_salt("heat_target").selected_text(label).width(220.0).show_ui(ui, |ui| {
-                    changed |= ui.selectable_value(&mut self.target, Target::Any, "Strongest of any AP").changed();
-                    for s in floor.ssids() {
-                        changed |= ui.selectable_value(&mut self.target, Target::Ssid(s.clone()), format!("SSID: {s}")).changed();
-                    }
-                    for b in floor.bssids() {
-                        changed |= ui.selectable_value(&mut self.target, Target::Bssid(b.clone()), format!("AP: {b}")).changed();
-                    }
-                });
-                egui::ComboBox::from_id_salt("heat_band")
-                    .selected_text(self.band.map_or("All bands".to_string(), |b| b.to_string()))
-                    .show_ui(ui, |ui| {
-                        changed |= ui.selectable_value(&mut self.band, None, "All bands").changed();
-                        for b in [Band::Ghz2_4, Band::Ghz5, Band::Ghz6] {
-                            changed |= ui.selectable_value(&mut self.band, Some(b), b.to_string()).changed();
-                        }
+        let (tool, survey, enabled) = (self.tool, self.mode == WorkMode::Survey, self.project.is_some());
+        let (mut back, mut picked) = (false, None);
+        egui::Sides::new().show(
+            ui,
+            |ui| {
+                // A narrow window scrolls the tools rather than running them under the cog.
+                egui::ScrollArea::horizontal().auto_shrink([false, true]).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        back = theme::button(ui, ButtonKind::Text, Some(ICON_ARROW_BACK), "Projects").clicked();
+                        ui.separator();
+                        picked = Self::tool_chips(ui, tool, survey, enabled);
                     });
-                ui.spacing_mut().slider_width = 100.0;
-                ui.add(egui::Slider::new(&mut self.opacity, 0.1..=1.0).text("Opacity"));
-                if floor.metres_per_px.is_some() {
-                    changed |= ui.add(egui::Slider::new(&mut self.fade_m, 2.0..=30.0).text("Fade (m)")).changed();
-                }
-            });
-            if changed {
-                self.heat_dirty = true;
-            }
-        });
+                });
+            },
+            |ui| self.settings_button(ui, &ctx),
+        );
+        if back {
+            self.back = true;
+        }
         if let Some(t) = picked {
             self.set_tool(t);
+            if t == Tool::Aps {
+                self.devices_open = true;
+            }
+        }
+    }
+
+    /// The cog at the right of the bar and the menu it opens: the project's
+    /// file actions and the view controls.
+    fn settings_button(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let r = theme::roles(ctx);
+        let size = theme::density(ctx).button_height();
+        let text = egui::RichText::new(ICON_SETTINGS.codepoint).font(egui::FontId::new(22.0, ICON_SETTINGS.font_family())).color(r.on_surface);
+        let button = ui.add_sized([size, size], egui::Button::new(text).corner_radius(size / 2.0)).on_hover_text("Project and view settings");
+        egui::Popup::menu(&button).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| self.settings_menu(ui, ctx));
+    }
+
+    fn settings_menu(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let r = theme::roles(ui.ctx());
+        ui.set_min_width(300.0);
+        ui.label(egui::RichText::new("Project").size(13.0).color(r.on_surface_variant));
+        if theme::button(ui, ButtonKind::Tonal, Some(ICON_IMAGE), "Open floor plan").clicked() {
+            self.pick_plan(ctx);
+            ui.close();
+        }
+        if theme::button(ui, ButtonKind::Tonal, Some(ICON_FOLDER_OPEN), "Open project").clicked() {
+            self.pick_project(ctx);
+            ui.close();
+        }
+        ui.add_enabled_ui(self.project.is_some(), |ui| {
+            if theme::button(ui, ButtonKind::Tonal, Some(ICON_SAVE), "Save").clicked() {
+                match self.path.clone() {
+                    Some(p) => self.save_to(&p),
+                    None => self.save_as(),
+                }
+                ui.close();
+            }
+            if theme::button(ui, ButtonKind::Text, None, "Save as...").clicked() {
+                self.save_as();
+                ui.close();
+            }
+            if self.mode == WorkMode::Survey {
+                let has_points = self.project.as_ref().is_some_and(|p| !p.floor().points.is_empty());
+                if ui.add_enabled_ui(has_points, |ui| theme::button(ui, ButtonKind::Filled, Some(ICON_DESCRIPTION), "Generate report")).inner.clicked() {
+                    self.make_report();
+                    ui.close();
+                }
+            }
+        });
+        if self.project.is_none() {
+            return;
+        }
+        ui.separator();
+        ui.label(egui::RichText::new(if self.mode == WorkMode::Survey { "Heatmap" } else { "Predicted coverage" }).size(13.0).color(r.on_surface_variant));
+        if self.mode == WorkMode::Survey {
+            self.heat_controls(ui);
+        } else {
+            self.plan_controls(ui);
+        }
+    }
+
+    /// The measured heatmap's controls.
+    fn heat_controls(&mut self, ui: &mut egui::Ui) {
+        let Some(floor) = self.project.as_ref().map(|p| p.floor()) else { return };
+        let mut changed = theme::switch_row(ui, &mut self.show_heat, "Heatmap").changed();
+        ui.add_enabled_ui(self.show_heat, |ui| {
+            let label = match &self.target {
+                Target::Any => "Strongest of any AP".to_string(),
+                Target::Ssid(s) => format!("SSID: {s}"),
+                Target::Bssid(b) => format!("AP: {b}"),
+            };
+            egui::ComboBox::from_id_salt("heat_target").selected_text(label).width(260.0).show_ui(ui, |ui| {
+                changed |= ui.selectable_value(&mut self.target, Target::Any, "Strongest of any AP").changed();
+                for s in floor.ssids() {
+                    changed |= ui.selectable_value(&mut self.target, Target::Ssid(s.clone()), format!("SSID: {s}")).changed();
+                }
+                for b in floor.bssids() {
+                    changed |= ui.selectable_value(&mut self.target, Target::Bssid(b.clone()), format!("AP: {b}")).changed();
+                }
+            });
+            egui::ComboBox::from_id_salt("heat_band")
+                .selected_text(self.band.map_or("All bands".to_string(), |b| b.to_string()))
+                .width(260.0)
+                .show_ui(ui, |ui| {
+                    changed |= ui.selectable_value(&mut self.band, None, "All bands").changed();
+                    for b in [Band::Ghz2_4, Band::Ghz5, Band::Ghz6] {
+                        changed |= ui.selectable_value(&mut self.band, Some(b), b.to_string()).changed();
+                    }
+                });
+            ui.spacing_mut().slider_width = 160.0;
+            ui.add(egui::Slider::new(&mut self.opacity, 0.1..=1.0).text("Opacity"));
+            if floor.metres_per_px.is_some() {
+                changed |= ui.add(egui::Slider::new(&mut self.fade_m, 2.0..=30.0).text("Fade (m)")).changed();
+            }
+        });
+        if changed {
+            self.heat_dirty = true;
+        }
+    }
+
+    /// The predicted coverage's controls.
+    fn plan_controls(&mut self, ui: &mut egui::Ui) {
+        let mut changed = theme::switch_row(ui, &mut self.show_pred, "Predicted coverage").changed();
+        ui.add_enabled_ui(self.show_pred, |ui| {
+            ui.horizontal(|ui| {
+                for b in [Band::Ghz2_4, Band::Ghz5, Band::Ghz6] {
+                    if theme::chip(ui, self.pred_band == b, None, &b.to_string()).clicked() {
+                        self.pred_band = b;
+                        changed = true;
+                    }
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Receiver height");
+                changed |= ui.add(egui::DragValue::new(&mut self.rx_height).range(0.0..=10.0).speed(0.05).suffix(" m").fixed_decimals(2)).changed();
+            });
+            ui.spacing_mut().slider_width = 160.0;
+            ui.add(egui::Slider::new(&mut self.opacity, 0.1..=1.0).text("Opacity"));
+        });
+        if changed {
+            self.pred_dirty = true;
         }
     }
 
@@ -971,12 +1038,12 @@ impl FloorTab {
     fn tool_chips(ui: &mut egui::Ui, current: Tool, survey: bool, enabled: bool) -> Option<Tool> {
         let chips = [
             (Tool::Select, ICON_ARROW_SELECTOR_TOOL, "Select"),
-            (Tool::Survey, ICON_PLACE, if survey { "Survey point" } else { "Survey data" }),
+            (Tool::Survey, ICON_PLACE, if survey { "Survey" } else { "Survey data" }),
             (Tool::Walls, ICON_ARCHITECTURE, "Walls"),
             (Tool::Obstacles, ICON_CATEGORY, "Obstacles"),
-            (Tool::Aps, ICON_ROUTER, "Access points"),
+            (Tool::Aps, ICON_ROUTER, "Devices"),
             (Tool::Client, ICON_SMARTPHONE, "Client"),
-            (Tool::Scale, ICON_STRAIGHTEN, "Set scale"),
+            (Tool::Scale, ICON_STRAIGHTEN, "Scale"),
         ];
         let mut picked = None;
         for (tool, icon, label) in chips {
@@ -985,35 +1052,6 @@ impl FloorTab {
             }
         }
         picked
-    }
-
-    /// The prediction controls shown in place of the survey heatmap row.
-    fn plan_row(&mut self, ui: &mut egui::Ui) {
-        let (tool, survey) = (self.tool, self.mode == WorkMode::Survey);
-        let mut picked = None;
-        ui.horizontal_wrapped(|ui| {
-            picked = Self::tool_chips(ui, tool, survey, true);
-            ui.separator();
-            let mut changed = theme::switch_row(ui, &mut self.show_pred, "Predicted coverage").changed();
-            ui.add_enabled_ui(self.show_pred, |ui| {
-                for b in [Band::Ghz2_4, Band::Ghz5, Band::Ghz6] {
-                    if theme::chip(ui, self.pred_band == b, None, &b.to_string()).clicked() {
-                        self.pred_band = b;
-                        changed = true;
-                    }
-                }
-                ui.label("Receiver height");
-                changed |= ui.add(egui::DragValue::new(&mut self.rx_height).range(0.0..=10.0).speed(0.05).suffix(" m").fixed_decimals(2)).changed();
-                ui.spacing_mut().slider_width = 100.0;
-                ui.add(egui::Slider::new(&mut self.opacity, 0.1..=1.0).text("Opacity"));
-            });
-            if changed {
-                self.pred_dirty = true;
-            }
-        });
-        if let Some(t) = picked {
-            self.set_tool(t);
-        }
     }
 
     /// Recompute the predicted coverage picture for the active floor.
@@ -1461,6 +1499,9 @@ impl FloorTab {
         let r = theme::roles(ctx);
         let (mut walls_out, mut aps_out) = (Vec::new(), Vec::new());
         if !matches!(self.tool, Tool::Walls | Tool::Select | Tool::Aps | Tool::Obstacles | Tool::Client) {
+            return (walls_out, aps_out);
+        }
+        if self.tool == Tool::Aps && !self.devices_open {
             return (walls_out, aps_out);
         }
         let Some(floor) = self.project.as_ref().map(|p| p.floor()) else { return (walls_out, aps_out) };
@@ -2298,6 +2339,33 @@ impl FloorTab {
         }
     }
 
+    /// The button under the floors button that opens the Add Devices menu.
+    fn devices_button(&mut self, ctx: &egui::Context, canvas: Rect) {
+        let r = theme::roles(ctx);
+        let open = self.devices_open;
+        let mut toggled = false;
+        egui::Area::new(egui::Id::unique("devices_button"))
+            .order(egui::Order::Foreground)
+            .pivot(egui::Align2::RIGHT_TOP)
+            .fixed_pos(canvas.right_top() + Vec2::new(-12.0, 12.0 + LAYERS_BUTTON + 8.0))
+            .show(ctx, |ui| {
+                let (rect, resp) = ui.allocate_exact_size(Vec2::splat(LAYERS_BUTTON), Sense::click());
+                let fill = if open { r.secondary_container } else { r.surface_container_high };
+                let fill = if resp.hovered() { theme::state_layer(fill, r.on_surface, 0.08) } else { fill };
+                let painter = ui.painter();
+                painter.rect(rect, LAYERS_BUTTON / 2.0, fill, Stroke::new(1.0, r.outline_variant), egui::StrokeKind::Inside);
+                let colour = if open { r.on_secondary_container } else { r.on_surface };
+                painter.text(rect.center(), egui::Align2::CENTER_CENTER, ICON_ROUTER.codepoint, egui::FontId::new(LAYERS_BUTTON * 0.5, ICON_ROUTER.font_family()), colour);
+                toggled = resp.on_hover_text("Add Devices").clicked();
+            });
+        if toggled {
+            self.devices_open = !self.devices_open;
+            if self.devices_open {
+                self.set_tool(Tool::Aps);
+            }
+        }
+    }
+
     fn canvas(&mut self, ui: &mut egui::Ui, env: &Env) {
         let overlay_tex = self.overlay_texture(ui.ctx());
         let (Some(project), Some(tex)) = (self.project.as_ref(), self.texture.clone()) else {
@@ -2371,6 +2439,9 @@ impl FloorTab {
             for (key, tool) in keys {
                 if ui.input(|i| i.key_pressed(key)) {
                     self.set_tool(tool);
+                    if tool == Tool::Aps {
+                        self.devices_open = true;
+                    }
                 }
             }
         }
@@ -2641,6 +2712,7 @@ impl FloorTab {
             self.apply_ap_edit(edit);
         }
         self.layers_button(ui.ctx(), rect);
+        self.devices_button(ui.ctx(), rect);
         if self.floors_open {
             for edit in self.floors_bubble(ui.ctx(), rect) {
                 self.apply_floor_edit(ui.ctx(), edit);
