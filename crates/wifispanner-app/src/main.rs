@@ -352,6 +352,7 @@ impl App {
             self.settings_open = true;
         }
         ui.menu_button(label(ui, Some(ICON_WIFI), "Adapters"), |ui| {
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
             let before = self.settings.card.clone();
             let auto = theme::check_label(ui, before.is_none(), "Auto (connected card)");
             if ui.selectable_label(before.is_none(), auto).clicked() {
@@ -377,6 +378,7 @@ impl App {
             }
         });
         ui.menu_button(label(ui, Some(ICON_VIEW_LIST), "Density"), |ui| {
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
             let before = self.settings.density;
             for d in theme::Density::ALL {
                 let text = theme::check_label(ui, before == d, d.name());
