@@ -957,14 +957,16 @@ impl FloorTab {
             ui.close();
         }
         ui.add_enabled_ui(self.project.is_some(), |ui| {
-            if theme::button(ui, ButtonKind::Tonal, Some(ICON_SAVE), "Save").clicked() {
+            // One pill: Save on the left, Save as on the right.
+            let (save, save_as) = theme::split_button(ui, ButtonKind::Tonal, ICON_SAVE, "Save", "Save as...");
+            if save.clicked() {
                 match self.path.clone() {
                     Some(p) => self.save_to(&p),
                     None => self.save_as(),
                 }
                 ui.close();
             }
-            if theme::button(ui, ButtonKind::Text, None, "Save as...").clicked() {
+            if save_as.clicked() {
                 self.save_as();
                 ui.close();
             }

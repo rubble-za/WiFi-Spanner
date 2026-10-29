@@ -457,6 +457,54 @@ const TEXT_NUDGE: f32 = 0.8;
 
 /// Draw a pill: a rounded background with an optional leading icon and a
 /// label, both centred. Greys out when the `Ui` is disabled.
+/// One pill split down the middle by a divider into two buttons: the left has an
+/// icon and a label, the right a label. Returns the left and right responses.
+pub fn split_button(ui: &mut egui::Ui, kind: ButtonKind, icon: egui_material_icons::MaterialIcon, left: &str, right: &str) -> (egui::Response, egui::Response) {
+    let r = roles(ui.ctx());
+    let (fill, fg) = match kind {
+        ButtonKind::Filled => (r.primary, r.on_primary),
+        _ => (r.secondary_container, r.on_secondary_container),
+    };
+    let height = density(ui.ctx()).button_height();
+    let scale = density(ui.ctx()).font_scale();
+    let font = TextStyle::Button.resolve(ui.style());
+    let (pad, gap, icon_size) = ((height / 2.0).clamp(14.0, 20.0), 8.0 * scale, 20.0 * scale);
+    let left_text = ui.painter().layout_no_wrap(left.to_string(), font.clone(), fg);
+    let right_text = ui.painter().layout_no_wrap(right.to_string(), font, fg);
+    let icon_galley = ui.painter().layout_no_wrap(icon.codepoint.to_string(), FontId::new(icon_size, icon.font_family()), fg);
+    let left_w = 2.0 * pad + icon_galley.size().x + gap + left_text.size().x;
+    let right_w = 2.0 * pad + right_text.size().x;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(left_w + right_w, height), egui::Sense::hover());
+    let split = rect.left() + left_w;
+    let (left_rect, right_rect) = (egui::Rect::from_min_max(rect.min, egui::pos2(split, rect.max.y)), egui::Rect::from_min_max(egui::pos2(split, rect.min.y), rect.max));
+    let base = ui.scope_id().with(("split_button", left, right));
+    let left_resp = ui.interact(left_rect, base.with("left"), egui::Sense::click());
+    let right_resp = ui.interact(right_rect, base.with("right"), egui::Sense::click());
+    let radius = (height / 2.0).round() as u8;
+    let painter = ui.painter();
+    painter.rect_filled(rect, radius, fill);
+    // The pressed or hovered half is shaded, with the pill's rounding on its outer corner only.
+    let shade = |resp: &egui::Response, rect: egui::Rect, left_side: bool| {
+        let opacity = if resp.is_pointer_button_down_on() { 0.12 } else if resp.hovered() { 0.08 } else { return };
+        let rounding = if left_side { egui::CornerRadius { nw: radius, sw: radius, ne: 0, se: 0 } } else { egui::CornerRadius { ne: radius, se: radius, nw: 0, sw: 0 } };
+        painter.rect_filled(rect, rounding, state_layer(Color32::TRANSPARENT, fg, opacity));
+    };
+    shade(&left_resp, left_rect, true);
+    shade(&right_resp, right_rect, false);
+    painter.line_segment([egui::pos2(split, rect.top() + height * 0.25), egui::pos2(split, rect.bottom() - height * 0.25)], Stroke::new(1.0, fg.gamma_multiply(0.4)));
+    // Contents, placed as in a single pill.
+    let mut x = left_rect.left() + pad;
+    let ink = ink_centre_y(&icon_galley).unwrap_or(icon_galley.size().y / 2.0 - ICON_NUDGE);
+    let icon_w = icon_galley.size().x;
+    painter.galley(egui::pos2(x, rect.center().y - ink), icon_galley, fg);
+    x += icon_w + gap;
+    painter.galley(egui::pos2(x, rect.center().y - left_text.size().y / 2.0 + TEXT_NUDGE), left_text, fg);
+    painter.galley(egui::pos2(right_rect.left() + pad, rect.center().y - right_text.size().y / 2.0 + TEXT_NUDGE), right_text, fg);
+    left_resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, left));
+    right_resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, right));
+    (left_resp, right_resp)
+}
+
 /// Where, from the top of the galley, the ink of its first glyph is centred
 /// vertically, when known.
 fn ink_centre_y(g: &egui::Galley) -> Option<f32> {
