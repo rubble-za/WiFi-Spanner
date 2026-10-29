@@ -75,6 +75,45 @@ pub fn fade_px(fade_m: f32, metres_per_px: Option<f32>, img_w: u32, img_h: u32) 
     }
 }
 
+/// The fade distance used when there are too few points to tell their spacing.
+pub const DEFAULT_FADE_M: f32 = 8.0;
+/// Limits on the automatic fade distance, in metres.
+const MIN_FADE_M: f32 = 3.0;
+const MAX_FADE_M: f32 = 15.0;
+
+/// The fade distance, in plan pixels, chosen from how far apart the survey
+/// points are: one and a half times the typical gap to the nearest neighbour,
+/// so the whole of a well-covered area stays solid while the colour stops
+/// where nothing was measured. Kept between 3 m and 15 m when the scale is known
+/// (between 4% and 40% of the plan's longer side when it is not).
+pub fn auto_fade_px(points: &[[f32; 2]], metres_per_px: Option<f32>, img_w: u32, img_h: u32) -> f32 {
+    let longest = img_w.max(img_h).max(1) as f32;
+    let mut gaps: Vec<f32> = points
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| {
+            points
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != i)
+                .map(|(_, q)| (p[0] - q[0]).hypot(p[1] - q[1]))
+                .filter(|d| *d > 0.5)
+                .min_by(f32::total_cmp)
+        })
+        .collect();
+    if gaps.is_empty() {
+        return fade_px(DEFAULT_FADE_M, metres_per_px, img_w, img_h);
+    }
+    gaps.sort_by(f32::total_cmp);
+    let typical = gaps[gaps.len() / 2];
+    let (lo, hi) = match metres_per_px.filter(|m| m.is_finite() && *m > 0.0) {
+        Some(m) => (MIN_FADE_M / m, MAX_FADE_M / m),
+        None => (longest * 0.04, longest * 0.4),
+    };
+    // Never outside what `fade_px` allows either.
+    (typical * 1.5).clamp(lo.max(longest * 0.04), hi.min(longest * 0.8).max(lo.max(longest * 0.04)))
+}
+
 /// Plan sizes (the longer side, in metres) a calibrated scale may imply.
 /// Anything outside is almost certainly a calibration mistake.
 pub const PLAUSIBLE_PLAN_M: std::ops::RangeInclusive<f32> = 1.0..=2000.0;
@@ -225,6 +264,30 @@ mod tests {
         assert_eq!(fade_px(8.0, Some(0.00001), 2828, 4000), 3200.0);
         assert_eq!(fade_px(8.0, None, 2828, 4000), 1000.0);
         assert_eq!(fade_px(8.0, Some(f32::NAN), 2828, 4000), 1000.0);
+    }
+
+    #[test]
+    fn the_fade_distance_follows_the_spacing_of_the_points() {
+        // 0.05 m per pixel: points 100 px (5 m) apart give 7.5 m = 150 px.
+        let row: Vec<[f32; 2]> = (0..5).map(|i| [100.0 * i as f32, 50.0]).collect();
+        assert!((auto_fade_px(&row, Some(0.05), 2000, 1000) - 150.0).abs() < 0.01);
+        // Close points are held to the 3 m floor, distant ones to the 15 m ceiling.
+        let tight: Vec<[f32; 2]> = (0..5).map(|i| [10.0 * i as f32, 50.0]).collect();
+        assert_eq!(auto_fade_px(&tight, Some(0.05), 1000, 500), 60.0);
+        let sparse: Vec<[f32; 2]> = (0..3).map(|i| [900.0 * i as f32, 50.0]).collect();
+        assert_eq!(auto_fade_px(&sparse, Some(0.05), 2900, 1000), 300.0);
+        // One point, or none, cannot tell the spacing: the 8 m default.
+        assert_eq!(auto_fade_px(&[[5.0, 5.0]], Some(0.05), 2000, 1000), 160.0);
+        assert_eq!(auto_fade_px(&[], Some(0.05), 2000, 1000), 160.0);
+        // Points on top of each other are one place.
+        assert_eq!(auto_fade_px(&[[5.0, 5.0], [5.0, 5.0]], Some(0.05), 2000, 1000), 160.0);
+        // One lonely outlier does not change the typical gap.
+        let mut with_outlier = row.clone();
+        with_outlier.push([1900.0, 900.0]);
+        assert!((auto_fade_px(&with_outlier, Some(0.05), 2000, 1000) - 150.0).abs() < 0.01);
+        // Without a scale it is a share of the plan, and never zero.
+        let no_scale = auto_fade_px(&row, None, 2000, 1000);
+        assert!((80.0..=800.0).contains(&no_scale), "{no_scale}");
     }
 
     #[test]

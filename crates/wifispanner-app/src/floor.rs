@@ -130,7 +130,6 @@ pub struct FloorTab {
     target: Target,
     band: Option<Band>,
     opacity: f32,
-    fade_m: f32,
     heat_texture: Option<TextureHandle>,
     heat_dirty: bool,
     status: String,
@@ -329,7 +328,6 @@ impl Default for FloorTab {
             target: Target::Any,
             band: None,
             opacity: 0.65,
-            fade_m: 8.0,
             heat_texture: None,
             heat_dirty: true,
             status: "Open a floor plan image to begin.".into(),
@@ -1030,9 +1028,6 @@ impl FloorTab {
                 });
             ui.spacing_mut().slider_width = 160.0;
             theme::slider_f32(ui, &mut self.opacity, 0.1..=1.0, 2, "Opacity");
-            if floor.metres_per_px.is_some() {
-                changed |= theme::slider_f32(ui, &mut self.fade_m, 2.0..=30.0, 1, "Fade (m)");
-            }
         });
         if changed {
             self.heat_dirty = true;
@@ -2881,7 +2876,8 @@ impl FloorTab {
             .iter()
             .map(|p| Sample { x: p.x, y: p.y, dbm: Floor::signal_at_min(p, &self.target, self.band, self.view.detect_dbm) })
             .collect();
-        let fade_px = heatmap::fade_px(self.fade_m, floor.metres_per_px, floor.width_px, floor.height_px);
+        let positions: Vec<[f32; 2]> = floor.points.iter().map(|p| [p.x, p.y]).collect();
+        let fade_px = heatmap::auto_fade_px(&positions, floor.metres_per_px, floor.width_px, floor.height_px);
         let grid = heatmap::interpolate(&samples, floor.width_px, floor.height_px, HEAT_CELLS, fade_px);
         let pixels = (0..grid.w * grid.h)
             .map(|i| {

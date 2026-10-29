@@ -23,7 +23,6 @@ use crate::settings::Settings;
 use crate::store;
 
 const HEAT_CELLS: usize = 256;
-const FADE_M: f32 = 8.0;
 const HEAT_OPACITY: f32 = 0.65;
 const BANDS: [Band; 3] = [Band::Ghz2_4, Band::Ghz5, Band::Ghz6];
 /// Noise floor assumed when the adapter reports none.
@@ -367,7 +366,8 @@ fn sections(floor: &Floor, style: &ReportStyle, opts: &ReportOptions) -> Vec<Sec
 
 fn grid_for(floor: &Floor, view: &View, style: &ReportStyle) -> Grid {
     let samples: Vec<Sample> = floor.points.iter().map(|p| Sample { x: p.x, y: p.y, dbm: value_at(p, view, style) }).collect();
-    let fade_px = heatmap::fade_px(FADE_M, floor.metres_per_px, floor.width_px, floor.height_px);
+    let positions: Vec<[f32; 2]> = floor.points.iter().map(|p| [p.x, p.y]).collect();
+    let fade_px = heatmap::auto_fade_px(&positions, floor.metres_per_px, floor.width_px, floor.height_px);
     heatmap::interpolate(&samples, floor.width_px, floor.height_px, HEAT_CELLS, fade_px)
 }
 
