@@ -208,6 +208,8 @@ enum Tab {
     Scanning,
     /// Project gallery and the floor plan survey workspace.
     Surveying,
+    /// The same projects, for placing access points and predicting coverage.
+    Planning,
 }
 
 struct App {
@@ -631,7 +633,7 @@ impl App {
     /// Show messages from the tabs as a snackbar for a few seconds.
     fn toast_tick(&mut self, ctx: &egui::Context) {
         let new = match self.tab {
-            Tab::Surveying => self.floor.take_toast().or_else(|| self.gallery.take_toast()),
+            Tab::Surveying | Tab::Planning => self.floor.take_toast().or_else(|| self.gallery.take_toast()),
             Tab::Scanning => None,
         };
         if let Some(text) = new {
@@ -832,7 +834,7 @@ impl App {
     fn set_tab(&mut self, tab: Tab) {
         if self.tab != tab {
             self.tab = tab;
-            if tab == Tab::Surveying {
+            if matches!(tab, Tab::Surveying | Tab::Planning) {
                 self.gallery.mark_stale();
             }
             let _ = self.worker.tx.send(Cmd::Live(tab == Tab::Scanning));
@@ -923,7 +925,7 @@ impl eframe::App for App {
                 let used = ui
                     .scope_builder(egui::UiBuilder::new().max_rect(rect).layout(layout), |ui| {
                         let mut tab = self.tab;
-                        for (t, name) in [(Tab::Scanning, "Scanning"), (Tab::Surveying, "Surveying")] {
+                        for (t, name) in [(Tab::Scanning, "Scanning"), (Tab::Surveying, "Surveying"), (Tab::Planning, "Planning")] {
                             if theme::tab(ui, tab == t, name, bar_h).clicked() {
                                 tab = t;
                             }
@@ -1002,7 +1004,7 @@ impl eframe::App for App {
                     ui.colored_label(egui::Color32::LIGHT_RED, e);
                 }
                 // The plan's scale sits at the right end while a plan is open.
-                if self.tab == Tab::Surveying && !self.surveying_gallery {
+                if self.tab != Tab::Scanning && !self.surveying_gallery {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| self.floor.scale_label(ui));
                 }
             });
@@ -1021,7 +1023,7 @@ impl eframe::App for App {
             Tab::Scanning => {
                 egui::CentralPanel::default().frame(theme::page_frame(ui.ctx())).show(ui, |ui| live::show(ui, self.latest.as_ref()));
             }
-            Tab::Surveying if self.surveying_gallery => {
+            Tab::Surveying | Tab::Planning if self.surveying_gallery => {
                 match self.gallery.show(ui, &self.settings) {
                     Some(gallery::GalleryAction::New) => self.floor.pick_plan(ui.ctx()),
                     Some(gallery::GalleryAction::Open(path)) => self.floor.open_project(ui.ctx(), path),
@@ -1030,7 +1032,8 @@ impl eframe::App for App {
                 // A multi-page PDF's page picker belongs to the workspace but opens from here.
                 self.floor.show_dialogs(ui.ctx());
             }
-            Tab::Surveying => {
+            Tab::Surveying | Tab::Planning => {
+                self.floor.set_mode(if self.tab == Tab::Planning { floor::WorkMode::Plan } else { floor::WorkMode::Survey });
                 let env = floor::Env {
                     tx: &self.worker.tx,
                     dwell_secs: self.worker.dwell_secs.load(Ordering::Relaxed),

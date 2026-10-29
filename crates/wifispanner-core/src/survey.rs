@@ -138,6 +138,9 @@ pub struct Floor {
     /// How this floor sits against the first one, for overlays.
     #[serde(default)]
     pub placement: Placement,
+    /// Access points placed in the planner.
+    #[serde(default)]
+    pub aps: Vec<crate::predict::PlannedAp>,
 }
 
 fn default_ceiling() -> f32 {
@@ -304,7 +307,7 @@ mod tests {
     }
 
     fn blank(name: &str, mpp: Option<f32>) -> Floor {
-        Floor { name: name.into(), image: vec![], width_px: 100, height_px: 50, metres_per_px: mpp, points: vec![], walls: vec![], ceiling_m: 3.0, placement: Placement::default() }
+        Floor { name: name.into(), image: vec![], width_px: 100, height_px: 50, metres_per_px: mpp, points: vec![], walls: vec![], ceiling_m: 3.0, placement: Placement::default(), aps: vec![] }
     }
 
     #[test]
@@ -398,6 +401,7 @@ mod tests {
             walls: vec![crate::walls::Wall::new([1.0, 2.0], [3.0, 4.0], crate::Material::Metal)],
             ceiling_m: 4.5,
             placement: Placement::default(),
+            aps: vec![],
         };
         let back = Project::from_json(&Project::new(floor).to_json().unwrap()).unwrap();
         assert_eq!(back.floor().walls.len(), 1);
