@@ -1155,7 +1155,7 @@ pub fn data_table(ui: &mut egui::Ui, id: &str, header: &[&str], gap: f32, body: 
     let behind = ui.painter().add(egui::Shape::Noop);
     let shown = ui.horizontal_top(|ui| {
         ui.add_space(12.0);
-        egui::Grid::new(id).min_row_height(row_h).spacing([gap + 16.0, 0.0]).show(ui, |ui| {
+        egui::Grid::new(id).striped(false).min_row_height(row_h).spacing([gap + 16.0, 0.0]).show(ui, |ui| {
             for h in header {
                 cell(ui, |ui| ui.label(medium(*h).color(r.on_surface)));
             }
@@ -1165,7 +1165,9 @@ pub fn data_table(ui: &mut egui::Ui, id: &str, header: &[&str], gap: f32, body: 
     });
     let shown = shown.inner;
     // The header band, the layer under the rows, the dividers and the hovered row, drawn behind the cells.
-    let rect = egui::Rect::from_min_max(shown.response.rect.min - egui::vec2(12.0, 0.0), shown.response.rect.max);
+    let grid = shown.response.rect;
+    let right = (grid.right() + 12.0).max(ui.clip_rect().right());
+    let rect = egui::Rect::from_min_max(grid.min - egui::vec2(12.0, 0.0), egui::pos2(right, grid.bottom()));
     let rows = (rect.height() / row_h).round().max(1.0) as usize;
     let mut shapes = vec![egui::Shape::rect_filled(rect, 0.0, r.surface_container)];
     shapes.push(egui::Shape::rect_filled(egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), row_h)), 0.0, accent));
