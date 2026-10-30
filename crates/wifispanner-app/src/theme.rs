@@ -1177,6 +1177,12 @@ pub fn data_table(ui: &mut egui::Ui, id: &str, header: &[&str], gap: f32, body: 
     let rows = (rect.height() / row_h).round().max(1.0) as usize;
     let mut shapes = vec![egui::Shape::rect_filled(rect, 0.0, r.surface_container)];
     shapes.push(egui::Shape::rect_filled(egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), row_h)), 0.0, accent));
+    // Every second row a shade off the layer.
+    let zebra = r.surface_container.lerp_to_gamma(hover, 0.6);
+    for row in (2..rows).step_by(2) {
+        let top = rect.top() + row as f32 * row_h;
+        shapes.push(egui::Shape::rect_filled(egui::Rect::from_min_size(egui::pos2(rect.left(), top), egui::vec2(rect.width(), row_h)), 0.0, zebra));
+    }
     // Only when the pointer is really over the table, not over a dialog or menu above it.
     if let Some(p) = ui.input(|i| i.pointer.hover_pos()).filter(|_| ui.rect_contains_pointer(rect)) {
         let row = ((p.y - rect.top()) / row_h) as usize;
