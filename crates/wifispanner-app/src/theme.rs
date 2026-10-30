@@ -1123,14 +1123,25 @@ fn toast(ctx: &egui::Context, text: &str, age: f32, hold: f32) -> bool {
         .inner
 }
 
+fn hot_id() -> egui::Id {
+    egui::Id::NULL.with("table-hot")
+}
+
 /// One cell of a [`data_table`]: in Carbon's rows the content is centred in the row's height.
 pub fn cell<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     if skin(ui.ctx()) != Skin::Carbon {
         return add(ui);
     }
     let row_h = density(ui.ctx()).row_height();
+    // The row under the pointer (as of the last frame) is light, so its text goes dark.
+    let hot: Option<(f32, f32)> = ui.data(|d| d.get_temp(hot_id()));
     ui.horizontal(|ui| {
         ui.set_min_height(row_h);
+        if let Some((top, bottom)) = hot
+            && (top - 1.0..bottom - 1.0).contains(&ui.cursor().top())
+        {
+            ui.visuals_mut().override_text_color = Some(Color32::from_rgb(0x16, 0x16, 0x16));
+        }
         add(ui)
     })
     .inner
@@ -1159,6 +1170,12 @@ pub fn data_table(ui: &mut egui::Ui, id: &str, header: &[&str], gap: f32, body: 
     };
     let row_h = density(ui.ctx()).row_height();
     let behind = ui.painter().add(egui::Shape::Noop);
+    let table_key = hot_id().with(id);
+    let hot: Option<(f32, f32)> = ui.data(|d| d.get_temp(table_key));
+    ui.data_mut(|d| match hot {
+        Some(h) => { d.insert_temp(hot_id(), h); }
+        None => { d.remove_temp::<(f32, f32)>(hot_id()); }
+    });
     let shown = ui.horizontal_top(|ui| {
         ui.add_space(12.0);
         egui::Grid::new(id).striped(false).min_row_height(row_h).spacing([gap + 16.0, 0.0]).show(ui, |ui| {
@@ -1171,6 +1188,7 @@ pub fn data_table(ui: &mut egui::Ui, id: &str, header: &[&str], gap: f32, body: 
     });
     let shown = shown.inner;
     // The header band, the layer under the rows, the dividers and the hovered row, drawn behind the cells.
+    ui.data_mut(|d| d.remove_temp::<(f32, f32)>(hot_id()));
     let grid = shown.response.rect;
     let right = (grid.right() + 12.0).max(ui.clip_rect().right());
     let rect = egui::Rect::from_min_max(grid.min - egui::vec2(12.0, 0.0), egui::pos2(right, grid.bottom()));
@@ -1179,6 +1197,7 @@ pub fn data_table(ui: &mut egui::Ui, id: &str, header: &[&str], gap: f32, body: 
     shapes.push(egui::Shape::rect_filled(egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), row_h)), 0.0, accent));
     // Every second row a shade off the layer.
     let zebra = r.surface_container.lerp_to_gamma(hover, 0.6);
+    let mut hot_now = None;
     for row in (2..rows).step_by(2) {
         let top = rect.top() + row as f32 * row_h;
         shapes.push(egui::Shape::rect_filled(egui::Rect::from_min_size(egui::pos2(rect.left(), top), egui::vec2(rect.width(), row_h)), 0.0, zebra));
@@ -1187,8 +1206,21 @@ pub fn data_table(ui: &mut egui::Ui, id: &str, header: &[&str], gap: f32, body: 
     if let Some(p) = ui.input(|i| i.pointer.hover_pos()).filter(|_| ui.rect_contains_pointer(rect)) {
         let row = ((p.y - rect.top()) / row_h) as usize;
         if row >= 1 && row < rows {
-            shapes.push(egui::Shape::rect_filled(egui::Rect::from_min_size(egui::pos2(rect.left(), rect.top() + row as f32 * row_h), egui::vec2(rect.width(), row_h)), 0.0, hover));
+            let top = rect.top() + row as f32 * row_h;
+            shapes.push(egui::Shape::rect_filled(egui::Rect::from_min_size(egui::pos2(rect.left(), top), egui::vec2(rect.width(), row_h)), 0.0, Color32::from_rgb(0xc6, 0xc6, 0xc6)));
+            hot_now = Some((top, top + row_h));
         }
+    }
+    if hot_now != hot {
+        ui.data_mut(|d| match hot_now {
+            Some(h) => {
+                d.insert_temp(table_key, h);
+            }
+            None => {
+                d.remove_temp::<(f32, f32)>(table_key);
+            }
+        });
+        ui.ctx().request_repaint();
     }
     for i in 1..=rows {
         let y = rect.top() + i as f32 * row_h - 0.5;
