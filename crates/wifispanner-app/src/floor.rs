@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
+use std::time::Duration;
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, Vec2};
@@ -80,6 +81,14 @@ const WALL_SNAP_PX: f32 = 12.0;
 const WALL_PICK_PX: f32 = 8.0;
 /// A new wall replaces the part of an older one it lies along within this many screen pixels.
 const WALL_CARVE_PX: f32 = 8.0;
+/// Positions of planning access points by id: before the optimiser ran, and what it set.
+struct Optimised {
+    manual: Vec<(u64, [f32; 2])>,
+    placed: Vec<(u64, [f32; 2])>,
+}
+
+/// How long the optimise button is held to restore the survey positions.
+const HOLD_SECS: f32 = 0.7;
 /// How many undo steps are kept.
 const WALL_HISTORY: usize = 100;
 /// A click this close (screen pixels) to an access point picks it.
@@ -93,9 +102,9 @@ fn round_size(ctx: &egui::Context) -> f32 {
 }
 
 /// How far down the right edge the menus start, below the round buttons: the floors button,
-/// and in Planning the devices button as well.
+/// and in Planning the devices and optimise buttons as well.
 fn right_top(ctx: &egui::Context, planning: bool) -> f32 {
-    let buttons = if planning { 2.0 } else { 1.0 };
+    let buttons = if planning { 3.0 } else { 1.0 };
     12.0 + buttons * round_size(ctx) + 8.0 * buttons
 }
 
@@ -170,6 +179,11 @@ pub struct FloorTab {
     floors_open: bool,
     /// The Add Devices menu is showing (it sits behind its own button).
     devices_open: bool,
+    /// The optimiser: running on a thread, and (once applied) where the access points stood before and where it put them.
+    optimising: Option<Receiver<Result<Vec<(usize, [f32; 2])>, String>>>,
+    optimised: Option<Optimised>,
+    /// When the optimise button was pressed down, and whether that press already did its long-press job.
+    optimise_hold: Option<(std::time::Instant, bool)>,
     layers_icon: Option<TextureHandle>,
     /// Wall drawing: the material and height for the next wall, where the wall
     /// being drawn started, and the wall picked in the list.
@@ -352,6 +366,9 @@ impl Default for FloorTab {
             rename: None,
             floors_open: false,
             devices_open: false,
+            optimising: None,
+            optimised: None,
+            optimise_hold: None,
             layers_icon: None,
             wall_material: Material::Concrete,
             wall_height: Material::Concrete.default_height_m(),
@@ -2400,6 +2417,148 @@ impl FloorTab {
         }
     }
 
+    /// Move the planning access points to where they cover best, in the background.
+    fn start_optimise(&mut self) {
+        let Some(project) = self.project.as_ref() else { return };
+        let mut floor = project.floor().clone();
+        floor.image = Vec::new();
+        let (band, rx) = (self.pred_band, self.rx_height);
+        let (tx, rx_chan) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(wifispanner_core::optimise::optimise(&floor, band, rx).map_err(|e| e.to_string()));
+        });
+        self.optimising = Some(rx_chan);
+    }
+
+    /// Collect the optimiser's answer and apply it.
+    fn optimise_tick(&mut self) {
+        let Some(chan) = &self.optimising else { return };
+        let Ok(result) = chan.try_recv() else { return };
+        self.optimising = None;
+        let Some(fl) = self.project.as_mut().map(|p| p.floor_mut()) else { return };
+        match result {
+            Err(why) => self.status = why,
+            Ok(moves) if moves.is_empty() => self.status = "The access points are already well placed.".into(),
+            Ok(moves) => {
+                let mut manual = Vec::new();
+                let mut placed = Vec::new();
+                for (i, [x, y]) in moves {
+                    if let Some(a) = fl.aps.get_mut(i) {
+                        manual.push((a.id, [a.x, a.y]));
+                        (a.x, a.y) = (x, y);
+                        placed.push((a.id, [x, y]));
+                    }
+                }
+                self.optimised = Some(Optimised { manual, placed });
+                self.status = "Access points moved for the best coverage. Click the button again to put them back.".into();
+                self.pred_dirty = true;
+                self.autosave();
+            }
+        }
+    }
+
+    /// Back to where the access points stood before the optimiser.
+    fn undo_optimise(&mut self) {
+        let (Some(o), Some(fl)) = (self.optimised.take(), self.project.as_mut().map(|p| p.floor_mut())) else { return };
+        for (id, [x, y]) in o.manual {
+            if let Some(a) = fl.aps.iter_mut().find(|a| a.id == id) {
+                (a.x, a.y) = (x, y);
+            }
+        }
+        self.status = "Access points put back where you had them.".into();
+        self.pred_dirty = true;
+        self.autosave();
+    }
+
+    /// Every access point that stands for a surveyed one goes back to where it was surveyed.
+    fn restore_survey_positions(&mut self) {
+        self.undo_optimise();
+        let Some(fl) = self.project.as_mut().map(|p| p.floor_mut()) else { return };
+        let surveyed: Vec<(u64, [f32; 2])> = fl.survey_aps.iter().map(|a| (a.id, [a.x, a.y])).collect();
+        let mut n = 0;
+        for a in fl.aps.iter_mut() {
+            if let Some((_, [x, y])) = a.from.and_then(|id| surveyed.iter().find(|s| s.0 == id)) {
+                (a.x, a.y) = (*x, *y);
+                n += 1;
+            }
+        }
+        self.status = format!("{n} access point(s) back at their surveyed positions.");
+        self.pred_dirty = true;
+        self.autosave();
+    }
+
+    /// The button under the devices button: a click optimises or undoes, a long press restores the survey.
+    fn optimise_button(&mut self, ctx: &egui::Context, canvas: Rect) {
+        self.optimise_tick();
+        // A hand edit of an optimised access point makes the layout the user's own again.
+        if let (Some(o), Some(fl)) = (&self.optimised, self.project.as_ref().map(|p| p.floor())) {
+            if o.placed.iter().any(|(id, [x, y])| fl.aps.iter().find(|a| a.id == *id).is_none_or(|a| (a.x, a.y) != (*x, *y))) {
+                self.optimised = None;
+            }
+        }
+        let r = theme::roles(ctx);
+        let (active, busy) = (self.optimised.is_some(), self.optimising.is_some());
+        let (mut click, mut long_press) = (false, false);
+        let held = self.optimise_hold;
+        egui::Area::new(egui::Id::unique("optimise_button"))
+            .order(egui::Order::Foreground)
+            .pivot(egui::Align2::RIGHT_TOP)
+            .fixed_pos(canvas.right_top() + Vec2::new(-12.0, 12.0 + 2.0 * (round_size(ctx) + 8.0)))
+            .show(ctx, |ui| {
+                let (rect, resp) = ui.allocate_exact_size(Vec2::splat(round_size(ctx)), Sense::click());
+                let fill = if active { r.secondary_container } else { r.surface_container_high };
+                let fill = if resp.hovered() { theme::state_layer(fill, r.on_surface, 0.08) } else { fill };
+                let painter = ui.painter();
+                painter.rect(rect, theme::radius(ctx, theme::Shape::Pill, round_size(ctx)), fill, Stroke::new(1.0, r.outline_variant), egui::StrokeKind::Inside);
+                let colour = if active { r.on_secondary_container } else { r.on_surface };
+                theme::paint_icon(painter, ctx, egui_material_icons::icons::ICON_AUTO_FIX_HIGH, rect.center(), round_size(ctx) * 0.5, colour);
+                if let Some((since, false)) = held {
+                    // A ring fills while the button is held.
+                    let frac = (since.elapsed().as_secs_f32() / HOLD_SECS).min(1.0);
+                    let radius = rect.width() * 0.5 - 2.0;
+                    let points: Vec<Pos2> = (0..=(40.0 * frac) as usize).map(|i| {
+                        let a = -std::f32::consts::FRAC_PI_2 + i as f32 / 40.0 * std::f32::consts::TAU;
+                        rect.center() + Vec2::new(a.cos(), a.sin()) * radius
+                    }).collect();
+                    if points.len() > 1 {
+                        painter.add(egui::Shape::line(points, Stroke::new(3.0, r.primary)));
+                    }
+                }
+                let tip = if busy {
+                    "Optimising..."
+                } else if active {
+                    "Click to put the access points back as you had them. Hold to restore the survey positions."
+                } else {
+                    "Optimise access point positions for the best coverage. Hold to restore the survey positions."
+                };
+                let resp = resp.on_hover_text(tip);
+                if resp.is_pointer_button_down_on() {
+                    let (since, fired) = held.unwrap_or((std::time::Instant::now(), false));
+                    if !fired && since.elapsed().as_secs_f32() >= HOLD_SECS {
+                        long_press = true;
+                    }
+                    self.optimise_hold = Some((since, fired || long_press));
+                    ui.ctx().request_repaint();
+                } else {
+                    let fired = held.is_some_and(|h| h.1);
+                    self.optimise_hold = None;
+                    click = resp.clicked() && !fired;
+                }
+            });
+        if busy {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
+        if long_press {
+            self.restore_survey_positions();
+        } else if click && !busy {
+            if self.optimised.is_some() {
+                self.undo_optimise();
+            } else {
+                self.start_optimise();
+            }
+        }
+    }
+
     /// The button under the floors button that opens the Add Devices menu.
     fn devices_button(&mut self, ctx: &egui::Context, canvas: Rect) {
         let r = theme::roles(ctx);
@@ -2775,6 +2934,7 @@ impl FloorTab {
         self.layers_button(ui.ctx(), rect);
         if self.mode == WorkMode::Plan {
             self.devices_button(ui.ctx(), rect);
+            self.optimise_button(ui.ctx(), rect);
         }
         if self.floors_open {
             for edit in self.floors_bubble(ui.ctx(), rect) {

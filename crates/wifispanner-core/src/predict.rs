@@ -188,13 +188,13 @@ fn metre_walls(floor: &Floor, mpp: f32, band: Band) -> Vec<MetreWall> {
 }
 
 /// What lies between the access points and the receivers, in metres.
-struct Scene {
+pub(crate) struct Scene {
     walls: Vec<MetreWall>,
     /// Obstacle areas with their points in metres, and each one's loss per metre and height.
     areas: Vec<(Area, f32, f32)>,
 }
 
-fn scene(floor: &Floor, mpp: f32, band: Band) -> Scene {
+pub(crate) fn scene(floor: &Floor, mpp: f32, band: Band) -> Scene {
     let areas = floor
         .areas
         .iter()
@@ -254,7 +254,7 @@ fn walls_between(walls: &[MetreWall], from: [f32; 3], to: [f32; 3]) -> f32 {
 }
 
 /// Signal in dBm at `rx` (x, y, height in metres) from one AP.
-fn signal_from(ap: &PlannedAp, eirp_dbm: f32, ap_xy_m: [f32; 2], rx: [f32; 3], scene: &Scene, band: Band) -> f32 {
+pub(crate) fn signal_from(ap: &PlannedAp, eirp_dbm: f32, ap_xy_m: [f32; 2], rx: [f32; 3], scene: &Scene, band: Band) -> f32 {
     let from = [ap_xy_m[0], ap_xy_m[1], ap.height_m];
     let d = ((rx[0] - from[0]).powi(2) + (rx[1] - from[1]).powi(2) + (rx[2] - from[2]).powi(2)).sqrt().max(1.0);
     eirp_dbm - loss_at_1m(band) - 10.0 * PATH_LOSS_EXPONENT * d.log10() - walls_between(&scene.walls, from, rx) - areas_between(&scene.areas, from, rx)
