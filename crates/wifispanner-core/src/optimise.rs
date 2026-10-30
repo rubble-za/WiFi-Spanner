@@ -24,6 +24,8 @@ const FLOOR_DBM: f32 = -100.0;
 const SAMPLES_ACROSS: f32 = 40.0;
 const SPOTS_ACROSS: f32 = 28.0;
 const MAX_PASSES: usize = 8;
+/// Access points keep at least this far (metres) from a wall.
+const WALL_CLEARANCE_M: f32 = 0.5;
 
 /// New positions (plan pixels) for the enabled access points of `floor.aps` that have a radio on
 /// `band`, as `(index in floor.aps, [x, y])`. Only those that move are listed; an empty list
@@ -46,7 +48,14 @@ pub fn optimise(floor: &Floor, band: Band, rx_height_m: f32) -> Result<Vec<(usiz
         let (w, h) = (((floor.width_px as f32 / step).ceil() as usize).max(1), ((floor.height_px as f32 / step).ceil() as usize).max(1));
         (0..w * h).map(|i| [((i % w) as f32 + 0.5) * step, ((i / w) as f32 + 0.5) * step]).collect::<Vec<[f32; 2]>>()
     };
-    let (samples, spots) = (grid(SAMPLES_ACROSS), grid(SPOTS_ACROSS));
+    let samples = grid(SAMPLES_ACROSS);
+    let mut spots = grid(SPOTS_ACROSS);
+    // Not on or right beside a wall (unless that leaves nowhere to stand).
+    let clear = WALL_CLEARANCE_M / mpp;
+    let off_walls: Vec<[f32; 2]> = spots.iter().copied().filter(|p| floor.walls.iter().all(|w| distance_to_segment(*p, w.a, w.b) >= clear)).collect();
+    if !off_walls.is_empty() {
+        spots = off_walls;
+    }
     let walls = scene(floor, mpp, band);
     let at = |ap: &PlannedAp, eirp: f32, xy: [f32; 2], s: [f32; 2]| signal_from(ap, eirp, [xy[0] * mpp, xy[1] * mpp], [s[0] * mpp, s[1] * mpp, rx_height_m], &walls, band);
 
@@ -125,6 +134,14 @@ pub fn optimise(floor: &Floor, band: Band, rx_height_m: f32) -> Result<Vec<(usiz
     Ok(movers.iter().zip(&placed).filter_map(|((i, _, _), spot)| spot.map(|s| (*i, spots[s]))).collect())
 }
 
+/// Distance from `p` to the segment `a`-`b`.
+fn distance_to_segment(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let len2 = dx * dx + dy * dy;
+    let t = if len2 < 1e-9 { 0.0 } else { (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2).clamp(0.0, 1.0) };
+    ((p[0] - (a[0] + t * dx)).powi(2) + (p[1] - (a[1] + t * dy)).powi(2)).sqrt()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,6 +183,18 @@ mod tests {
         assert!(mean_clamped(&f) > before + 1.0 && mean_clamped(&f) > TARGET_DBM - 0.5, "{} vs {before}", mean_clamped(&f));
         let (a, b) = (&f.aps[0], &f.aps[1]);
         assert!(((a.x - b.x).powi(2) + (a.y - b.y).powi(2)).sqrt() > 100.0, "they end up apart");
+    }
+
+    #[test]
+    fn access_points_keep_off_the_walls() {
+        use crate::walls::Wall;
+        use crate::Material;
+        let mut f = floor(vec![PlannedAp::new("a".into(), 20.0, 20.0)]);
+        // A thin glass wall down the middle, where the best spot for one AP would be.
+        f.walls.push(Wall { height_m: None, ..Wall::new([200.0, 0.0], [200.0, 200.0], Material::Glass) });
+        let moves = optimise(&f, Band::Ghz5, 1.0).unwrap();
+        let [x, y] = moves.first().expect("it moves").1;
+        assert!(distance_to_segment([x, y], [200.0, 0.0], [200.0, 200.0]) >= WALL_CLEARANCE_M / 0.1, "{x},{y}");
     }
 
     #[test]

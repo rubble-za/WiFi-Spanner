@@ -96,6 +96,19 @@ const AP_PICK_PX: f32 = 16.0;
 /// The stacked-layers picture for the floors button (white on transparent, tinted when drawn).
 const LAYERS_ICON: &[u8] = include_bytes!("../assets/layers.png");
 /// How far down the right edge the bubbles start, below the floors button.
+/// The Add Devices picture: an access point seen from above (a circle with a smaller one inside)
+/// with a plus over its lower right, separated from it by a border in the button's own colour.
+fn paint_add_device(painter: &egui::Painter, centre: Pos2, size: f32, colour: Color32, background: Color32) {
+    let (ring, c) = (size * 0.5, centre - Vec2::splat(size * 0.06));
+    painter.circle_stroke(c, ring, Stroke::new(1.8, colour));
+    painter.circle_stroke(c, ring * 0.45, Stroke::new(1.8, colour));
+    let (p, arm) = (c + Vec2::splat(ring * 0.72), size * 0.3);
+    for stroke in [Stroke::new(5.5, background), Stroke::new(2.2, colour)] {
+        painter.line_segment([p - Vec2::new(arm, 0.0), p + Vec2::new(arm, 0.0)], stroke);
+        painter.line_segment([p - Vec2::new(0.0, arm), p + Vec2::new(0.0, arm)], stroke);
+    }
+}
+
 /// Size of the round buttons over the plan, with the density.
 fn round_size(ctx: &egui::Context) -> f32 {
     theme::density(ctx).button_height() + 4.0
@@ -2575,7 +2588,7 @@ impl FloorTab {
                 let painter = ui.painter();
                 painter.rect(rect, theme::radius(ctx, theme::Shape::Pill, round_size(ctx)), fill, Stroke::new(1.0, r.outline_variant), egui::StrokeKind::Inside);
                 let colour = if open { r.on_secondary_container } else { r.on_surface };
-                theme::paint_icon(painter, ctx, ICON_ROUTER, rect.center(), round_size(ctx) * 0.5, colour);
+                paint_add_device(painter, rect.center(), round_size(ctx) * 0.5, colour, fill);
                 toggled = resp.on_hover_text("Add Devices").clicked();
             });
         if toggled {
