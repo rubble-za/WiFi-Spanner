@@ -27,6 +27,8 @@ pub struct UpdateInfo {
     /// The AppImage to install in place, when the release has one with a
     /// checksum we can verify.
     pub asset: Option<Asset>,
+    /// What changed, one entry per line of the release notes.
+    pub notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,6 +45,8 @@ struct Release {
     html_url: String,
     #[serde(default)]
     draft: bool,
+    #[serde(default)]
+    body: Option<String>,
     #[serde(default)]
     assets: Vec<AssetJson>,
 }
@@ -112,6 +116,15 @@ fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
     parts.next().is_none().then_some(v)
 }
 
+/// A release's notes as plain lines: Markdown bullets and headings lose their marks, blank lines go.
+fn notes_from(body: Option<&str>) -> Vec<String> {
+    body.unwrap_or("")
+        .lines()
+        .map(|l| l.trim().trim_start_matches(['-', '*', '#', '+', ' ']).replace("**", "").replace('`', ""))
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
 /// The highest published release, if it is newer than `current`. Drafts are
 /// ignored; pre-releases count, since every release so far is one.
 fn newest_after(json: &str, current: &str) -> Result<Option<UpdateInfo>, String> {
@@ -123,7 +136,7 @@ fn newest_after(json: &str, current: &str) -> Result<Option<UpdateInfo>, String>
         .filter_map(|r| Some((parse_version(&r.tag_name)?, r)))
         .max_by_key(|(v, _)| *v)
         .filter(|(v, _)| *v > current)
-        .map(|(_, r)| UpdateInfo { asset: pick_asset(r.assets), tag: r.tag_name, url: r.html_url }))
+        .map(|(_, r)| UpdateInfo { notes: notes_from(r.body.as_deref()), asset: pick_asset(r.assets), tag: r.tag_name, url: r.html_url }))
 }
 
 /// Which update notices to stay quiet about: a version the user skipped, and
@@ -279,9 +292,16 @@ mod tests {
     ]"#;
 
     #[test]
+    fn release_notes_become_plain_lines() {
+        let got = notes_from(Some("## New\r\n- **Carbon** toast\n\n* `data` table"));
+        assert_eq!(got, vec!["New", "Carbon toast", "data table"]);
+        assert!(notes_from(None).is_empty());
+    }
+
+    #[test]
     fn picks_the_highest_release_comparing_numbers_not_text() {
         let got = newest_after(JSON, "0.3.0").unwrap().unwrap();
-        assert_eq!(got, UpdateInfo { tag: "v0.10.0".into(), url: "https://example.test/0.10.0".into(), asset: None });
+        assert_eq!(got, UpdateInfo { tag: "v0.10.0".into(), url: "https://example.test/0.10.0".into(), asset: None, notes: vec![] });
     }
 
     #[test]

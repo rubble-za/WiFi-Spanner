@@ -550,7 +550,22 @@ impl App {
                 let path = appimage.map_or(String::new(), |p| p.display().to_string());
                 ("Install update?", Box::new(move |ui, act| {
                     ui.label(format!("Install WiFi Spanner {} and restart?", info.tag));
-                    ui.add_space(4.0);
+                    if !info.notes.is_empty() {
+                        ui.add_space(12.0);
+                        ui.label(theme::medium("What's new"));
+                        ui.add_space(4.0);
+                        // Ten lines show at once; a longer list scrolls.
+                        let line = ui.text_style_height(&egui::TextStyle::Body) + ui.spacing().item_spacing.y;
+                        egui::ScrollArea::vertical().max_height(line * 10.0).auto_shrink([false, true]).show(ui, |ui| {
+                            for note in &info.notes {
+                                ui.horizontal_top(|ui| {
+                                    ui.label("\u{2022}");
+                                    ui.add(egui::Label::new(note).wrap());
+                                });
+                            }
+                        });
+                    }
+                    ui.add_space(8.0);
                     ui.weak(format!(
                         "This downloads {size:.1} MB from GitHub, checks it against the checksum GitHub publishes for the \
                          file, then replaces {path} and restarts the app. If anything doesn't check out, nothing is \
@@ -598,7 +613,7 @@ impl App {
                 }))
             }
         };
-        theme::dialog(ctx, title, 440.0, |ui| body(ui, &mut act));
+        theme::dialog(ctx, title, if matches!(self.install, InstallState::Confirm(_)) { 600.0 } else { 440.0 }, |ui| body(ui, &mut act));
         match act {
             Some(Act::Install(info)) => self.start_install(ctx, info),
             Some(Act::Cancel) => self.install_cancel.store(true, Ordering::Relaxed),
