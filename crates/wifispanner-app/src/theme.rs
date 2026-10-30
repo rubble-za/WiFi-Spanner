@@ -1297,7 +1297,15 @@ pub fn dialog<R>(ctx: &egui::Context, title: &str, width: f32, add: impl FnOnce(
         .corner_radius(radius(ctx, Shape::Dialog, 0.0))
         .inner_margin(if skin(ctx) == Skin::Carbon { 24 } else { 24 })
         .shadow(shadow(r.shadow, 24, 0.20));
+    // A layer over the window that takes the pointer, so nothing behind the dialog reacts to it.
+    egui::Area::new(egui::Id::new("dialog-blocker"))
+        .order(egui::Order::Middle)
+        .fixed_pos(ctx.content_rect().min)
+        .show(ctx, |ui| {
+            ui.allocate_rect(ctx.content_rect(), egui::Sense::hover());
+        });
     egui::Window::new(title)
+        .order(egui::Order::Foreground)
         .title_bar(false)
         .collapsible(false)
         .resizable(false)

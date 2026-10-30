@@ -479,7 +479,7 @@ impl App {
         match choice {
             Some(Choice::Update) => self.install = InstallState::Confirm(info),
             Some(Choice::Tomorrow) => {
-                self.update_prefs.snooze(update::unix_now());
+                self.update_prefs.snooze(&info.tag, update::unix_now());
                 self.update_prefs.save();
                 self.update_notice = None;
             }

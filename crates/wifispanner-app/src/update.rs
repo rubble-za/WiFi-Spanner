@@ -146,8 +146,10 @@ fn newest_after(json: &str, current: &str) -> Result<Option<UpdateInfo>, String>
 pub struct Prefs {
     /// The newest version the user chose to dismiss; a newer one is announced again.
     pub skipped: Option<String>,
-    /// Unix time before which the automatic notice stays hidden.
+    /// Unix time before which the automatic notice stays hidden...
     pub snooze_until: u64,
+    /// ...for this version only: a newer release is announced at once.
+    pub snoozed: Option<String>,
 }
 
 const SNOOZE_SECS: u64 = 24 * 60 * 60;
@@ -174,11 +176,12 @@ impl Prefs {
 
     /// Whether the automatic check should announce `tag` at time `now`.
     pub fn should_announce(&self, tag: &str, now: u64) -> bool {
-        self.skipped.as_deref() != Some(tag) && now >= self.snooze_until
+        self.skipped.as_deref() != Some(tag) && (self.snoozed.as_deref() != Some(tag) || now >= self.snooze_until)
     }
 
-    pub fn snooze(&mut self, now: u64) {
+    pub fn snooze(&mut self, tag: &str, now: u64) {
         self.snooze_until = now + SNOOZE_SECS;
+        self.snoozed = Some(tag.to_string());
     }
 
     pub fn skip(&mut self, tag: &str) {
@@ -366,9 +369,10 @@ mod tests {
     fn skip_and_snooze_rules() {
         let mut p = Prefs::default();
         assert!(p.should_announce("v1.0.0", 1000));
-        p.snooze(1000);
+        p.snooze("v1.0.0", 1000);
         assert!(!p.should_announce("v1.0.0", 1000 + SNOOZE_SECS - 1), "still snoozed");
         assert!(p.should_announce("v1.0.0", 1000 + SNOOZE_SECS), "a day later it speaks up again");
+        assert!(p.should_announce("v1.0.1", 1000), "a newer version ignores the snooze");
         p.skip("v1.0.0");
         assert!(!p.should_announce("v1.0.0", u64::MAX), "skipped for good");
         assert!(p.should_announce("v1.0.1", u64::MAX), "but a newer version is announced");
