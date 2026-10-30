@@ -567,6 +567,11 @@ impl FloorTab {
         }
     }
 
+    /// A project is open (so its file must stay where it is).
+    pub fn has_open_project(&self) -> bool {
+        self.path.is_some()
+    }
+
     pub fn open_project(&mut self, ctx: &egui::Context, path: PathBuf) {
         let loaded = std::fs::read_to_string(&path)
             .map_err(|e| e.to_string())

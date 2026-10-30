@@ -18,9 +18,68 @@ pub fn data_home() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// `<data home>/wifispanner/projects`.
+static PROJECTS_DIR: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
+
+/// The projects folder the user chose, or `None` for the default.
+pub fn set_projects_dir(dir: Option<PathBuf>) {
+    *PROJECTS_DIR.write().unwrap_or_else(|e| e.into_inner()) = dir;
+}
+
+/// The chosen folder, else `<data home>/wifispanner/projects`.
 pub fn projects_dir() -> PathBuf {
+    PROJECTS_DIR.read().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_else(default_projects_dir)
+}
+
+pub fn default_projects_dir() -> PathBuf {
     data_home().join("wifispanner").join("projects")
+}
+
+/// Move everything in the projects folder `from` into `to` (projects and their report folders).
+/// Nothing is overwritten: if `to` already has a file or folder of the same name, nothing is
+/// moved and the clash is reported. Returns how many items moved.
+pub fn move_projects(from: &Path, to: &Path) -> Result<usize, String> {
+    let same = |a: &Path, b: &Path| matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b);
+    if same(from, to) {
+        return Err("That is already the projects folder.".into());
+    }
+    if to.canonicalize().is_ok_and(|t| from.canonicalize().is_ok_and(|f| t.starts_with(f))) {
+        return Err("Choose a folder outside the current projects folder.".into());
+    }
+    std::fs::create_dir_all(to).map_err(|e| format!("Could not create {}: {e}", to.display()))?;
+    let items: Vec<PathBuf> = match std::fs::read_dir(from) {
+        Ok(rd) => rd.filter_map(Result::ok).map(|e| e.path()).collect(),
+        Err(_) => Vec::new(),
+    };
+    for item in &items {
+        if let Some(name) = item.file_name()
+            && to.join(name).exists()
+        {
+            return Err(format!("{} already has an item named {}; nothing was moved.", to.display(), name.to_string_lossy()));
+        }
+    }
+    for item in &items {
+        let dest = to.join(item.file_name().unwrap_or_default());
+        move_item(item, &dest).map_err(|e| format!("Could not move {}: {e}", item.display()))?;
+    }
+    Ok(items.len())
+}
+
+/// Rename, or copy then delete when the two folders are on different disks.
+fn move_item(from: &Path, to: &Path) -> std::io::Result<()> {
+    if std::fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+    if from.is_dir() {
+        std::fs::create_dir_all(to)?;
+        for e in std::fs::read_dir(from)? {
+            let e = e?;
+            move_item(&e.path(), &to.join(e.file_name()))?;
+        }
+        std::fs::remove_dir(from)
+    } else {
+        std::fs::copy(from, to)?;
+        std::fs::remove_file(from)
+    }
 }
 
 /// `$XDG_CONFIG_HOME/wifispanner`, falling back to `~/.config/wifispanner`.
@@ -183,5 +242,27 @@ mod tests {
         assert_eq!(file_uri(Path::new("/home/me/My Reports/r-1.html")), "file:///home/me/My%20Reports/r-1.html");
         assert_eq!(file_uri(Path::new("/a/ü.html")), "file:///a/%C3%BC.html");
         assert_eq!(file_uri(Path::new("/a/b&c#d")), "file:///a/b%26c%23d");
+    }
+}
+
+#[cfg(test)]
+mod move_tests {
+    use super::*;
+
+    #[test]
+    fn moves_projects_and_report_folders_and_refuses_clashes() {
+        let base = std::env::temp_dir().join(format!("ws-move-{}", std::process::id()));
+        let (a, b) = (base.join("a"), base.join("b"));
+        std::fs::create_dir_all(a.join("x-reports")).unwrap();
+        std::fs::write(a.join("x.wifispanner"), "1").unwrap();
+        std::fs::write(a.join("x-reports/r.html"), "2").unwrap();
+        assert_eq!(move_projects(&a, &b), Ok(2));
+        assert!(b.join("x.wifispanner").is_file() && b.join("x-reports/r.html").is_file());
+        assert!(!a.join("x.wifispanner").exists());
+        std::fs::write(a.join("x.wifispanner"), "3").unwrap();
+        assert!(move_projects(&a, &b).is_err());
+        assert!(a.join("x.wifispanner").exists());
+        assert!(move_projects(&b, &b.join("inner")).is_err());
+        let _ = std::fs::remove_dir_all(base);
     }
 }

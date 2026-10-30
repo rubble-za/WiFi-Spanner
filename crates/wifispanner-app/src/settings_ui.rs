@@ -34,6 +34,10 @@ pub struct LauncherView {
     pub installed: bool,
     pub message: String,
     pub request: Option<bool>,
+    /// The projects folder, what the last move said, and the user's request to move it.
+    pub projects_dir: String,
+    pub projects_message: String,
+    pub move_projects: bool,
 }
 
 /// Show the dialog while `open`. Returns true if any setting changed.
@@ -116,6 +120,18 @@ fn general(ui: &mut egui::Ui, s: &mut Settings, launcher: &mut LauncherView) {
         "Asks GitHub whether a newer release exists, which shares your IP address with GitHub. You can also check \
          any time from the menu: Check for updates.",
     );
+    ui.add_space(14.0);
+    ui.label(crate::theme::medium("Projects folder"));
+    ui.weak(&launcher.projects_dir);
+    if crate::theme::button(ui, crate::theme::ButtonKind::Outlined, Some(egui_material_icons::icons::ICON_FOLDER_OPEN), "Move projects folder...")
+        .on_hover_text("Pick a new folder; every project and report in the current one is moved into it.")
+        .clicked()
+    {
+        launcher.move_projects = true;
+    }
+    if !launcher.projects_message.is_empty() {
+        ui.label(&launcher.projects_message);
+    }
     ui.add_space(14.0);
     ui.label(crate::theme::medium("Application menu and icon"));
     if !launcher.available {

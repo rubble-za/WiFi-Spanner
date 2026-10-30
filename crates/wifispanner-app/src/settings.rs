@@ -62,6 +62,8 @@ pub struct Settings {
     pub check_updates: bool,
     /// The one-time offer to add a launcher and icon has been shown.
     pub launcher_prompted: bool,
+    /// Where projects are kept; `None` is the default folder.
+    pub projects_dir: Option<PathBuf>,
     /// Size of the window when it was last used, restored on the next start.
     pub window_size: Option<[f32; 2]>,
     /// The screen the window size was saved on; a size is only trusted at
@@ -98,6 +100,7 @@ impl Default for Settings {
             design: Skin::Material,
             check_updates: true,
             launcher_prompted: false,
+            projects_dir: None,
             window_size: None,
             screen_size: None,
             dwell_secs: 3,

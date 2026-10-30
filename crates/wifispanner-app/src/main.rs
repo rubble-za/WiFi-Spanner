@@ -233,6 +233,7 @@ struct App {
     update_notice: Option<update::UpdateInfo>,
     /// Result of a manual check: message and an optional release link.
     update_message: Option<(String, Option<String>)>,
+    projects_message: String,
     update_prefs: update::Prefs,
     /// The AppImage this process runs from, if it is one (enables in-place updates).
     appimage: Option<std::path::PathBuf>,
@@ -262,6 +263,7 @@ impl App {
     fn new(ctx: egui::Context) -> Self {
         let ctx_for_logo = ctx.clone();
         let settings = Settings::load();
+        store::set_projects_dir(settings.projects_dir.clone());
         theme::install(&ctx, settings.theme_mode, settings.density, settings.design);
         let cards = list_cards().unwrap_or_default();
         let dwell = Arc::new(AtomicU64::new(settings.dwell_secs));
@@ -285,6 +287,7 @@ impl App {
             update_rx: None,
             update_notice: None,
             update_message: None,
+            projects_message: String::new(),
             update_prefs: update::Prefs::load(),
             appimage: update::running_appimage(),
             install: InstallState::Idle,
@@ -840,6 +843,9 @@ impl App {
             installed: launcher::is_installed(),
             message: self.launcher_message.clone(),
             request: None,
+            projects_dir: store::projects_dir().display().to_string(),
+            projects_message: self.projects_message.clone(),
+            move_projects: false,
         };
         if settings_ui::show(ctx, &mut open, &mut self.settings_section, &mut self.settings, &self.cards, &mut launcher) {
             theme::set_mode(ctx, self.settings.theme_mode);
@@ -852,7 +858,29 @@ impl App {
         if let Some(add) = launcher.request {
             self.set_launcher(add);
         }
+        if launcher.move_projects {
+            self.move_projects_folder();
+        }
         self.settings_open = open;
+    }
+
+    /// Ask for a folder and move every project (and its reports) into it.
+    fn move_projects_folder(&mut self) {
+        if self.floor.has_open_project() {
+            self.projects_message = "Close the open project first (back to Projects), then move the folder.".into();
+            return;
+        }
+        let old = store::projects_dir();
+        let Some(new) = rfd::FileDialog::new().set_title("Move projects to").set_directory(&old).pick_folder() else { return };
+        self.projects_message = match store::move_projects(&old, &new) {
+            Ok(n) => {
+                self.settings.projects_dir = Some(new.clone());
+                store::set_projects_dir(Some(new.clone()));
+                self.settings.save();
+                format!("Moved {n} item(s) to {}.", new.display())
+            }
+            Err(e) => e,
+        };
     }
 
     fn set_tab(&mut self, tab: Tab) {
