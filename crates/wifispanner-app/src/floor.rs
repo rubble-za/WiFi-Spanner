@@ -21,7 +21,7 @@ use wifispanner_scan::{Band, ScanResult};
 
 use crate::settings::Settings;
 use crate::theme::{self, ButtonKind};
-use egui_material_icons::icons::{ICON_ADD, ICON_ARCHITECTURE, ICON_ARROW_SELECTOR_TOOL, ICON_CATEGORY, ICON_CROP_FREE, ICON_EDIT, ICON_ROUTER, ICON_SMARTPHONE, ICON_ARROW_BACK, ICON_OPEN_WITH, ICON_RESTART_ALT, ICON_VISIBILITY, ICON_VISIBILITY_OFF, ICON_DELETE, ICON_DESCRIPTION, ICON_FOLDER_OPEN, ICON_IMAGE, ICON_PLACE, ICON_SAVE, ICON_STRAIGHTEN, ICON_UNDO};
+use egui_material_icons::icons::{ICON_ADD, ICON_ARCHITECTURE, ICON_CATEGORY, ICON_CROP_FREE, ICON_EDIT, ICON_ROUTER, ICON_SMARTPHONE, ICON_ARROW_BACK, ICON_OPEN_WITH, ICON_RESTART_ALT, ICON_VISIBILITY, ICON_VISIBILITY_OFF, ICON_DELETE, ICON_DESCRIPTION, ICON_FOLDER_OPEN, ICON_IMAGE, ICON_PLACE, ICON_SAVE, ICON_STRAIGHTEN, ICON_UNDO};
 use crate::{Cmd, pdf, report, store};
 use crate::live::signal_color;
 
@@ -109,15 +109,33 @@ fn paint_add_device(painter: &egui::Painter, centre: Pos2, size: f32, colour: Co
     }
 }
 
+/// The Select picture: a dashed selection box with a mouse pointer over its lower right, the
+/// pointer edged in the button's colour to stand clear of the box.
+fn paint_select(painter: &egui::Painter, centre: Pos2, size: f32, colour: Color32, background: Color32) {
+    let half = size * 0.42;
+    let c = centre - Vec2::splat(size * 0.04);
+    let corners = [c + Vec2::new(-half, -half), c + Vec2::new(half, -half), c + Vec2::new(half, half), c + Vec2::new(-half, half), c + Vec2::new(-half, -half)];
+    painter.extend(egui::Shape::dashed_line(&corners, Stroke::new(1.6, colour), size * 0.17, size * 0.12));
+    let k = size * 0.62;
+    let tip = c + Vec2::new(size * 0.02, -size * 0.02);
+    let pointer: Vec<Pos2> = [(0.0, 0.0), (0.0, 0.82), (0.2, 0.65), (0.36, 1.0), (0.5, 0.93), (0.35, 0.59), (0.62, 0.59)]
+        .iter()
+        .map(|(x, y)| tip + Vec2::new(*x, *y) * k)
+        .collect();
+    painter.add(egui::Shape::convex_polygon(pointer.clone(), background, Stroke::new(3.5, background)));
+    painter.add(egui::Shape::closed_line(pointer.clone(), Stroke::new(3.5, background)));
+    painter.add(egui::Shape::convex_polygon(pointer, colour, Stroke::new(0.8, colour)));
+}
+
 /// Size of the round buttons over the plan, with the density.
 fn round_size(ctx: &egui::Context) -> f32 {
     theme::density(ctx).button_height() + 4.0
 }
 
 /// How far down the right edge the menus start, below the round buttons: the floors button,
-/// and in Planning the devices and optimise buttons as well.
+/// then Select, and in Planning the devices and optimise buttons as well.
 fn right_top(ctx: &egui::Context, planning: bool) -> f32 {
-    let buttons = if planning { 3.0 } else { 1.0 };
+    let buttons = if planning { 4.0 } else { 2.0 };
     12.0 + buttons * round_size(ctx) + 8.0 * buttons
 }
 
@@ -1095,7 +1113,6 @@ impl FloorTab {
     /// tool the user picked, if any.
     fn tool_chips(ui: &mut egui::Ui, current: Tool, survey: bool, enabled: bool) -> Option<Tool> {
         let chips = [
-            (Tool::Select, ICON_ARROW_SELECTOR_TOOL, "Select"),
             (Tool::Survey, ICON_PLACE, if survey { "Survey" } else { "Survey data" }),
             (Tool::Walls, ICON_ARCHITECTURE, "Walls"),
             (Tool::Obstacles, ICON_CATEGORY, "Obstacles"),
@@ -1614,7 +1631,8 @@ impl FloorTab {
                         }
                         tool => {
                             // The lists of materials and kinds are in two columns, so those menus are wider.
-                            ui.set_width(if tool == Tool::Client { 250.0 } else if theme::skin(ctx) == theme::Skin::Carbon { 470.0 } else { 400.0 });
+                            let empty_select = tool == Tool::Select && self.selected_walls.is_empty() && self.aps_selected.is_empty() && self.selected_areas.is_empty();
+                            ui.set_width(if empty_select { 240.0 } else if tool == Tool::Client { 250.0 } else if theme::skin(ctx) == theme::Skin::Carbon { 470.0 } else { 400.0 });
                             match tool {
                                 Tool::Walls => self.walls_content(ui, floor, &mut walls_out),
                                 Tool::Select => self.select_content(ui, floor, &mut walls_out, &mut aps_out),
@@ -2516,7 +2534,7 @@ impl FloorTab {
         egui::Area::new(egui::Id::unique("optimise_button"))
             .order(egui::Order::Foreground)
             .pivot(egui::Align2::RIGHT_TOP)
-            .fixed_pos(canvas.right_top() + Vec2::new(-12.0, 12.0 + 2.0 * (round_size(ctx) + 8.0)))
+            .fixed_pos(canvas.right_top() + Vec2::new(-12.0, 12.0 + 3.0 * (round_size(ctx) + 8.0)))
             .show(ctx, |ui| {
                 let (rect, resp) = ui.allocate_exact_size(Vec2::splat(round_size(ctx)), Sense::click());
                 let fill = if active { r.secondary_container } else { r.surface_container_high };
@@ -2572,6 +2590,30 @@ impl FloorTab {
         }
     }
 
+    /// The Select tool's button, under the floors button.
+    fn select_button(&mut self, ctx: &egui::Context, canvas: Rect) {
+        let r = theme::roles(ctx);
+        let active = self.tool == Tool::Select;
+        let mut picked = false;
+        egui::Area::new(egui::Id::unique("select_button"))
+            .order(egui::Order::Foreground)
+            .pivot(egui::Align2::RIGHT_TOP)
+            .fixed_pos(canvas.right_top() + Vec2::new(-12.0, 12.0 + round_size(ctx) + 8.0))
+            .show(ctx, |ui| {
+                let (rect, resp) = ui.allocate_exact_size(Vec2::splat(round_size(ctx)), Sense::click());
+                let fill = if active { r.secondary_container } else { r.surface_container_high };
+                let fill = if resp.hovered() { theme::state_layer(fill, r.on_surface, 0.08) } else { fill };
+                let painter = ui.painter();
+                painter.rect(rect, theme::radius(ctx, theme::Shape::Pill, round_size(ctx)), fill, Stroke::new(1.0, r.outline_variant), egui::StrokeKind::Inside);
+                let colour = if active { r.on_secondary_container } else { r.on_surface };
+                paint_select(painter, rect.center(), round_size(ctx) * 0.5, colour, fill);
+                picked = resp.on_hover_text("Select").clicked();
+            });
+        if picked {
+            self.set_tool(Tool::Select);
+        }
+    }
+
     /// The button under the floors button that opens the Add Devices menu.
     fn devices_button(&mut self, ctx: &egui::Context, canvas: Rect) {
         let r = theme::roles(ctx);
@@ -2580,7 +2622,7 @@ impl FloorTab {
         egui::Area::new(egui::Id::unique("devices_button"))
             .order(egui::Order::Foreground)
             .pivot(egui::Align2::RIGHT_TOP)
-            .fixed_pos(canvas.right_top() + Vec2::new(-12.0, 12.0 + round_size(ctx) + 8.0))
+            .fixed_pos(canvas.right_top() + Vec2::new(-12.0, 12.0 + 2.0 * (round_size(ctx) + 8.0)))
             .show(ctx, |ui| {
                 let (rect, resp) = ui.allocate_exact_size(Vec2::splat(round_size(ctx)), Sense::click());
                 let fill = if open { r.secondary_container } else { r.surface_container_high };
@@ -2945,6 +2987,7 @@ impl FloorTab {
             self.apply_ap_edit(edit);
         }
         self.layers_button(ui.ctx(), rect);
+        self.select_button(ui.ctx(), rect);
         if self.mode == WorkMode::Plan {
             self.devices_button(ui.ctx(), rect);
             self.optimise_button(ui.ctx(), rect);
