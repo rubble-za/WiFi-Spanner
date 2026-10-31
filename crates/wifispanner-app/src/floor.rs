@@ -242,6 +242,10 @@ pub struct FloorTab {
     autoscale_rx: Option<Receiver<Result<crate::autoscale::Detected, String>>>,
     autoscale_found: Option<crate::autoscale::Detected>,
     autoscale_error: Option<String>,
+    /// Looking for walls on the plan picture: the thread's answer, what it found, and why it failed.
+    wallscan_rx: Option<Receiver<Result<crate::wallscan::Found, String>>>,
+    wallscan_found: Option<crate::wallscan::Found>,
+    wallscan_error: Option<String>,
     layers_icon: Option<TextureHandle>,
     /// Wall drawing: the material and height for the next wall, where the wall
     /// being drawn started, and the wall picked in the list.
@@ -365,6 +369,7 @@ enum WallEdit {
     ClientHeight(f32),
     Ceiling(f32),
     AutoScale,
+    DetectWalls,
     Undo,
     Delete,
 }
@@ -431,6 +436,9 @@ impl Default for FloorTab {
             autoscale_rx: None,
             autoscale_found: None,
             autoscale_error: None,
+            wallscan_rx: None,
+            wallscan_found: None,
+            wallscan_error: None,
             layers_icon: None,
             wall_material: Material::Concrete,
             wall_height: Material::Concrete.default_height_m(),
@@ -1478,6 +1486,7 @@ impl FloorTab {
                 self.client_bands[i] = on;
             }
             WallEdit::AutoScale => self.start_autoscale(),
+            WallEdit::DetectWalls => self.start_wallscan(),
             WallEdit::Undo => self.undo_walls(),
             WallEdit::Delete => self.delete_selected_walls(),
             WallEdit::Ceiling(c) => {
@@ -1702,6 +1711,23 @@ impl FloorTab {
         });
         self.material_rows(ui, Some(self.wall_material), edits);
         self.wall_height_controls(ui, floor, Some(self.wall_height), false, edits);
+        let busy = self.wallscan_rx.is_some();
+        ui.horizontal_wrapped(|ui| {
+            let label = if busy { "Looking for walls..." } else { "Detect walls from the plan" };
+            if ui.add_enabled_ui(!busy && floor.metres_per_px.is_some(), |ui| theme::button(ui, ButtonKind::Tonal, Some(ICON_AUTO_FIX_HIGH), label)).inner
+                .on_hover_text(if floor.metres_per_px.is_some() {
+                    "Traces the dark wall bands on the plan, with doors and windows where they break the walls. Walls come in as concrete, doors as wood and windows as window glass; change them with Select."
+                } else {
+                    "Set the plan's scale first, so wall thicknesses and door and window sizes are known."
+                })
+                .clicked()
+            {
+                edits.push(WallEdit::DetectWalls);
+            }
+        });
+        if let Some(why) = &self.wallscan_error {
+            ui.label(egui::RichText::new(why).text_style(egui::TextStyle::Body).color(theme::roles(ui.ctx()).error));
+        }
         if ui.add_enabled_ui(!self.wall_history.is_empty(), |ui| theme::button(ui, ButtonKind::Text, Some(ICON_UNDO), "Undo")).inner.clicked() {
             edits.push(WallEdit::Undo);
         }
@@ -1724,6 +1750,82 @@ impl FloorTab {
         if let Some(why) = &self.autoscale_error {
             ui.add_space(4.0);
             ui.label(egui::RichText::new(why).text_style(egui::TextStyle::Body).color(r.error));
+        }
+    }
+
+    /// Look for walls on the plan picture in the background.
+    fn start_wallscan(&mut self) {
+        let Some(project) = self.project.as_ref() else { return };
+        let Some(mpp) = project.floor().metres_per_px else { return };
+        let bytes = project.floor().image.clone();
+        self.wallscan_error = None;
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = image::load_from_memory(&bytes).map_err(|e| format!("Could not open the plan picture: {e}")).and_then(|img| {
+                let rgb = img.into_rgb8();
+                let found = crate::wallscan::scan(rgb.as_raw(), rgb.dimensions(), mpp);
+                if found.walls.is_empty() { Err("No walls were found. They need to be drawn as solid dark bands.".to_string()) } else { Ok(found) }
+            });
+            let _ = tx.send(result);
+        });
+        self.wallscan_rx = Some(rx);
+    }
+
+    /// Collect what was found, and ask how to add it.
+    fn wallscan_tick(&mut self, ctx: &egui::Context) {
+        if let Some(rx) = &self.wallscan_rx {
+            match rx.try_recv() {
+                Ok(Ok(found)) => {
+                    self.wallscan_found = Some(found);
+                    self.wallscan_rx = None;
+                }
+                Ok(Err(why)) => {
+                    self.wallscan_error = Some(why);
+                    self.wallscan_rx = None;
+                }
+                Err(mpsc::TryRecvError::Empty) => ctx.request_repaint_after(Duration::from_millis(150)),
+                Err(mpsc::TryRecvError::Disconnected) => self.wallscan_rx = None,
+            }
+        }
+        let Some(found) = self.wallscan_found.clone() else { return };
+        let existing = self.project.as_ref().map_or(0, |p| p.floor().walls.len());
+        let (mut add, mut replace, mut close) = (false, false, false);
+        theme::dialog(ctx, "Walls found", 440.0, |ui| {
+            ui.label(format!("{} walls, {} doors and {} windows.", found.walls.len() - found.doors - found.windows, found.doors, found.windows));
+            ui.add_space(4.0);
+            ui.weak("Walls come in as concrete, doors as wood and windows as window glass. Select them to change the material or remove any that are not walls; Undo takes them all back out.");
+            if existing > 0 {
+                ui.add_space(4.0);
+                ui.weak(format!("The plan already has {existing} walls."));
+            }
+            theme::actions(ui, |ui| {
+                if theme::button(ui, ButtonKind::Filled, None, if existing > 0 { "Add to the plan" } else { "Add walls" }).clicked() {
+                    add = true;
+                }
+                if existing > 0 && theme::button(ui, ButtonKind::Outlined, None, "Replace the walls").clicked() {
+                    replace = true;
+                }
+                if theme::button(ui, ButtonKind::Text, None, "Cancel").clicked() {
+                    close = true;
+                }
+            });
+        });
+        if add || replace {
+            self.remember_walls(false);
+            if let Some(p) = self.project.as_mut() {
+                if replace {
+                    p.floor_mut().walls.clear();
+                }
+                p.floor_mut().walls.extend(found.walls.iter().copied());
+            }
+            self.selected_walls.clear();
+            self.status = format!("{} walls added from the plan.", found.walls.len());
+            self.heat_dirty = true;
+            self.pred_dirty = true;
+            self.autosave();
+        }
+        if add || replace || close {
+            self.wallscan_found = None;
         }
     }
 
@@ -3118,6 +3220,7 @@ impl FloorTab {
             self.apply_ap_edit(edit);
         }
         self.autoscale_tick(ui.ctx());
+        self.wallscan_tick(ui.ctx());
         self.layers_button(ui.ctx(), rect);
         self.select_button(ui.ctx(), rect);
         if self.mode == WorkMode::Plan {

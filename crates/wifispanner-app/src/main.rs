@@ -4,6 +4,7 @@
 //! WiFi Spanner desktop app: a live network analyser and a floor plan survey.
 
 mod autoscale;
+mod wallscan;
 mod floor;
 mod gallery;
 mod launcher;
