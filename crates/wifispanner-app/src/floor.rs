@@ -127,6 +127,29 @@ fn paint_select(painter: &egui::Painter, centre: Pos2, size: f32, colour: Color3
     painter.add(egui::Shape::convex_polygon(pointer, colour, Stroke::new(0.8, colour)));
 }
 
+/// Keep a typed distance to digits, one comma or point, and at most three decimals.
+fn clean_distance(text: &mut String) {
+    let mut out = String::new();
+    let (mut sep, mut decimals) = (false, 0);
+    for c in text.chars() {
+        match c {
+            '0'..='9' if !sep && out.len() < 7 => out.push(c),
+            '0'..='9' if sep && decimals < 3 => {
+                out.push(c);
+                decimals += 1;
+            }
+            ',' | '.' if !sep && !out.is_empty() => {
+                out.push(c);
+                sep = true;
+            }
+            _ => {}
+        }
+    }
+    if *text != out {
+        *text = out;
+    }
+}
+
 /// Size of the round buttons over the plan, with the density.
 fn round_size(ctx: &egui::Context) -> f32 {
     theme::density(ctx).button_height() + 4.0
@@ -1744,12 +1767,16 @@ impl FloorTab {
         theme::dialog(ctx, "Scale found", 420.0, |ui| {
             ui.label(format!("{:.1} px per metre, which makes the plan {w:.1} x {h:.1} m.", 1.0 / found.metres_per_px));
             ui.add_space(4.0);
-            ui.weak(format!(
-                "{} dimensions on the plan agree, for example {}.{}",
-                found.agreeing,
-                found.examples.join(", "),
-                found.assumed.map_or(String::new(), |u| format!(" Numbers without a unit were read as {u}."))
-            ));
+            if let Some((n, long_mm)) = found.ratio {
+                ui.weak(format!("The plan has no dimension lines. It states a scale of 1:{n}, and the page was taken to be {long_mm:.0} mm on its long side (A4 unless the note names a sheet size)."));
+            } else {
+                ui.weak(format!(
+                    "{} dimensions on the plan agree, for example {}.{}",
+                    found.agreeing,
+                    found.examples.join(", "),
+                    found.assumed.map_or(String::new(), |u| format!(" Numbers without a unit were read as {u}."))
+                ));
+            }
             if let Some(m) = was {
                 ui.add_space(4.0);
                 ui.weak(format!("This replaces the current scale ({:.1} px per metre).", 1.0 / m));
@@ -3156,6 +3183,7 @@ impl FloorTab {
             ui.add_space(8.0);
             let edit = theme::field(ui, egui::TextEdit::singleline(&mut self.scale_input).hint_text("Distance in metres").desired_width(f32::INFINITY));
             edit.request_focus();
+            clean_distance(&mut self.scale_input);
             let metres = self.scale_input.trim().replace(',', ".").parse::<f32>().ok().filter(|m| m.is_finite() && *m > 0.0);
             // Typing nothing yet is not an error; a distance that cannot be right is.
             let check = match metres {
@@ -3282,5 +3310,25 @@ mod tests {
         assert!((mpp - 0.0526).abs() < 0.001);
         assert!(check_scale(100.0, 100_000.0, 2828, 4000).unwrap_err().contains("looks wrong"));
         assert!(check_scale(100.0, 0.001, 2828, 4000).unwrap_err().contains("looks wrong"));
+    }
+}
+
+#[cfg(test)]
+mod distance_tests {
+    use super::clean_distance;
+
+    #[test]
+    fn typed_distances_keep_three_decimals_at_most() {
+        let clean = |s: &str| {
+            let mut s = s.to_string();
+            clean_distance(&mut s);
+            s
+        };
+        assert_eq!(clean("4,36"), "4,36");
+        assert_eq!(clean("4,1"), "4,1");
+        assert_eq!(clean("4,36666666666"), "4,366");
+        assert_eq!(clean("12.5abc"), "12.5");
+        assert_eq!(clean(",5"), "5");
+        assert_eq!(clean("1,2,3"), "1,23");
     }
 }

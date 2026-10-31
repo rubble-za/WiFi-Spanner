@@ -221,6 +221,8 @@ pub struct Detected {
     pub examples: Vec<String>,
     /// The unit assumed for numbers that did not state one.
     pub assumed: Option<&'static str>,
+    /// For a scale note (1:N) read on a page of known size: N and the page's long side in millimetres.
+    pub ratio: Option<(u32, f32)>,
 }
 
 /// Find the plan's scale from the dimensions printed on it.
@@ -239,7 +241,66 @@ pub fn detect(rgb: &[u8], size: (u32, u32)) -> Result<Detected, String> {
     }
     let turned_ink = Ink::new(turned.as_raw(), (h, w));
     dims.extend(horizontal_dimensions(&turned_ink, &engine, turned.as_raw()));
-    from_dimensions(&dims, size)
+    match from_dimensions(&dims, size) {
+        Ok(found) => Ok(found),
+        // No dimension lines: a plan page drawn to scale on a standard sheet states it as a ratio.
+        Err(why) => match page_long_side_mm(size) {
+            Some(guess) => ratio_scale(&engine, rgb, size, guess).ok_or(why),
+            None => Err(why),
+        },
+    }
+}
+
+/// Long sides of the A-series sheets in millimetres.
+const SHEETS_MM: [(&str, f32); 6] = [("A0", 1189.0), ("A1", 841.0), ("A2", 594.0), ("A3", 420.0), ("A4", 297.0), ("A5", 210.0)];
+
+/// A4's long side, when the picture has the proportions of an A-series page: a plan on a
+/// standard sheet (a PDF page) is taken to be A4 unless its scale note names another size.
+fn page_long_side_mm(size: (u32, u32)) -> Option<f32> {
+    let ratio = size.0.max(size.1) as f32 / size.0.min(size.1).max(1) as f32;
+    ((ratio - std::f32::consts::SQRT_2).abs() < 0.04).then_some(297.0)
+}
+
+/// `1:100`, `1 : 50`, `1/200`, optionally followed by `@A3`: the ratio and the sheet's long side, if named.
+pub fn parse_ratio(text: &str) -> Option<(u32, Option<f32>)> {
+    let chars: Vec<char> = text.chars().collect();
+    for i in 0..chars.len() {
+        if chars[i] != '1' || (i > 0 && chars[i - 1].is_ascii_alphanumeric()) {
+            continue;
+        }
+        let mut j = i + 1;
+        while j < chars.len() && chars[j] == ' ' {
+            j += 1;
+        }
+        if j >= chars.len() || !matches!(chars[j], ':' | '/') {
+            continue;
+        }
+        j += 1;
+        while j < chars.len() && chars[j] == ' ' {
+            j += 1;
+        }
+        let digits: String = chars[j..].iter().take_while(|c| c.is_ascii_digit()).collect();
+        let Ok(n) = digits.parse::<u32>() else { continue };
+        if !(2..=5000).contains(&n) {
+            continue;
+        }
+        let rest: String = chars[j + digits.len()..].iter().take(6).collect::<String>().to_uppercase();
+        let sheet = rest.split_once('@').and_then(|(_, s)| SHEETS_MM.iter().find(|(name, _)| s.trim_start().starts_with(name))).map(|(_, mm)| *mm);
+        return Some((n, sheet));
+    }
+    None
+}
+
+/// Look for a scale note anywhere on the page and turn it into a scale for the page's size.
+fn ratio_scale(engine: &OcrEngine, rgb: &[u8], size: (u32, u32), assumed_long_mm: f32) -> Option<Detected> {
+    let source = ImageSource::from_bytes(rgb, size).ok()?;
+    let input = engine.prepare_input(source).ok()?;
+    let text = engine.get_text(&input).ok()?;
+    let (n, sheet) = parse_ratio(&text)?;
+    let long_mm = sheet.unwrap_or(assumed_long_mm);
+    let mpp = long_mm / size.0.max(size.1) as f32 * n as f32 / 1000.0;
+    let (w, h) = (size.0 as f32 * mpp, size.1 as f32 * mpp);
+    (1.0..=500.0).contains(&w.max(h)).then(|| Detected { metres_per_px: mpp, agreeing: 1, examples: vec![format!("1:{n}")], assumed: None, ratio: Some((n, long_mm)) })
 }
 
 /// Combine what was read into one scale.
@@ -287,7 +348,7 @@ pub fn from_dimensions(dims: &[Dimension], size: (u32, u32)) -> Result<Detected,
     if !(1.0..=500.0).contains(&w.max(h)) {
         return Err(format!("The scale found would make the plan {w:.0} x {h:.0} m, which looks wrong."));
     }
-    Ok(Detected { metres_per_px: mpp, agreeing: group.len(), examples: group.iter().take(4).map(|c| c.1.to_string()).collect(), assumed: unit })
+    Ok(Detected { metres_per_px: mpp, agreeing: group.len(), examples: group.iter().take(4).map(|c| c.1.to_string()).collect(), assumed: unit, ratio: None })
 }
 
 #[cfg(test)]
@@ -333,6 +394,18 @@ mod tests {
         assert!((feet.metres_per_px - 0.03048).abs() < 1e-4);
         let metres = from_dimensions(&[dim(100.0, "4.5"), dim(200.0, "9.0")], (1000, 800)).unwrap();
         assert_eq!(metres.assumed, Some("metres"));
+    }
+
+    #[test]
+    fn scale_notes_are_read_as_ratios() {
+        assert_eq!(parse_ratio("SCALE 1:100"), Some((100, None)));
+        assert_eq!(parse_ratio("Scale: 1 : 50 @ A3"), Some((50, Some(420.0))));
+        assert_eq!(parse_ratio("1/200@a4"), Some((200, Some(297.0))));
+        assert_eq!(parse_ratio("Page 11:30 and 21:5"), None);
+        assert_eq!(parse_ratio("1:1"), None);
+        assert_eq!(page_long_side_mm((2000, 1414)), Some(297.0));
+        assert_eq!(page_long_side_mm((2828, 4000)), Some(297.0));
+        assert_eq!(page_long_side_mm((1000, 1000)), None);
     }
 
     #[test]
