@@ -21,7 +21,7 @@ use wifispanner_scan::{Band, ScanResult};
 
 use crate::settings::Settings;
 use crate::theme::{self, ButtonKind};
-use egui_material_icons::icons::{ICON_ADD, ICON_ARCHITECTURE, ICON_CATEGORY, ICON_CROP_FREE, ICON_EDIT, ICON_ROUTER, ICON_SMARTPHONE, ICON_ARROW_BACK, ICON_OPEN_WITH, ICON_RESTART_ALT, ICON_VISIBILITY, ICON_VISIBILITY_OFF, ICON_DELETE, ICON_DESCRIPTION, ICON_FOLDER_OPEN, ICON_IMAGE, ICON_PLACE, ICON_SAVE, ICON_STRAIGHTEN, ICON_UNDO};
+use egui_material_icons::icons::{ICON_AUTO_FIX_HIGH, ICON_ADD, ICON_ARCHITECTURE, ICON_CATEGORY, ICON_CROP_FREE, ICON_EDIT, ICON_ROUTER, ICON_SMARTPHONE, ICON_ARROW_BACK, ICON_OPEN_WITH, ICON_RESTART_ALT, ICON_VISIBILITY, ICON_VISIBILITY_OFF, ICON_DELETE, ICON_DESCRIPTION, ICON_FOLDER_OPEN, ICON_IMAGE, ICON_PLACE, ICON_SAVE, ICON_STRAIGHTEN, ICON_UNDO};
 use crate::{Cmd, pdf, report, store};
 use crate::live::signal_color;
 
@@ -215,6 +215,10 @@ pub struct FloorTab {
     optimised: Option<Optimised>,
     /// When the optimise button was pressed down, and whether that press already did its long-press job.
     optimise_hold: Option<(std::time::Instant, bool)>,
+    /// Reading the plan's dimensions for its scale: the thread's answer, what it found, and why it failed.
+    autoscale_rx: Option<Receiver<Result<crate::autoscale::Detected, String>>>,
+    autoscale_found: Option<crate::autoscale::Detected>,
+    autoscale_error: Option<String>,
     layers_icon: Option<TextureHandle>,
     /// Wall drawing: the material and height for the next wall, where the wall
     /// being drawn started, and the wall picked in the list.
@@ -337,6 +341,7 @@ enum WallEdit {
     ClientBand(usize, bool),
     ClientHeight(f32),
     Ceiling(f32),
+    AutoScale,
     Undo,
     Delete,
 }
@@ -400,6 +405,9 @@ impl Default for FloorTab {
             optimising: None,
             optimised: None,
             optimise_hold: None,
+            autoscale_rx: None,
+            autoscale_found: None,
+            autoscale_error: None,
             layers_icon: None,
             wall_material: Material::Concrete,
             wall_height: Material::Concrete.default_height_m(),
@@ -1446,6 +1454,7 @@ impl FloorTab {
                 self.client_kind = CUSTOM_CLIENT;
                 self.client_bands[i] = on;
             }
+            WallEdit::AutoScale => self.start_autoscale(),
             WallEdit::Undo => self.undo_walls(),
             WallEdit::Delete => self.delete_selected_walls(),
             WallEdit::Ceiling(c) => {
@@ -1596,7 +1605,7 @@ impl FloorTab {
     fn right_panel(&self, ctx: &egui::Context, canvas: Rect) -> (Vec<WallEdit>, Vec<ApEdit>) {
         let r = theme::roles(ctx);
         let (mut walls_out, mut aps_out) = (Vec::new(), Vec::new());
-        if !matches!(self.tool, Tool::Walls | Tool::Select | Tool::Aps | Tool::Obstacles | Tool::Client) {
+        if !matches!(self.tool, Tool::Walls | Tool::Select | Tool::Aps | Tool::Obstacles | Tool::Client | Tool::Scale) {
             return (walls_out, aps_out);
         }
         if self.tool == Tool::Aps && (self.mode == WorkMode::Survey || !self.devices_open) {
@@ -1631,13 +1640,15 @@ impl FloorTab {
                         }
                         tool => {
                             // The lists of materials and kinds are in two columns, so those menus are wider.
+                            let small = tool == Tool::Scale;
                             let empty_select = tool == Tool::Select && self.selected_walls.is_empty() && self.aps_selected.is_empty() && self.selected_areas.is_empty();
-                            ui.set_width(if empty_select { 240.0 } else if tool == Tool::Client { 250.0 } else if theme::skin(ctx) == theme::Skin::Carbon { 470.0 } else { 400.0 });
+                            ui.set_width(if small { 270.0 } else if empty_select { 240.0 } else if tool == Tool::Client { 250.0 } else if theme::skin(ctx) == theme::Skin::Carbon { 470.0 } else { 400.0 });
                             match tool {
                                 Tool::Walls => self.walls_content(ui, floor, &mut walls_out),
                                 Tool::Select => self.select_content(ui, floor, &mut walls_out, &mut aps_out),
                                 Tool::Obstacles => self.obstacles_content(ui, floor, &mut walls_out),
                                 Tool::Client => self.client_content(ui, floor, &mut walls_out),
+                                Tool::Scale => self.scale_content(ui, &mut walls_out),
                                 _ => {}
                             }
                         }
@@ -1670,6 +1681,99 @@ impl FloorTab {
         self.wall_height_controls(ui, floor, Some(self.wall_height), false, edits);
         if ui.add_enabled_ui(!self.wall_history.is_empty(), |ui| theme::button(ui, ButtonKind::Text, Some(ICON_UNDO), "Undo")).inner.clicked() {
             edits.push(WallEdit::Undo);
+        }
+    }
+
+    /// The Scale menu: click two points of a known distance, or let the plan's own dimensions decide.
+    fn scale_content(&self, ui: &mut egui::Ui, edits: &mut Vec<WallEdit>) {
+        let r = theme::roles(ui.ctx());
+        ui.label(theme::heading(ui, "Scale"));
+        ui.label(egui::RichText::new("Click two points a known distance apart.").text_style(egui::TextStyle::Body).color(r.on_surface_variant));
+        ui.add_space(6.0);
+        let busy = self.autoscale_rx.is_some();
+        let label = if busy { "Reading the plan..." } else { "Find from the plan's dimensions" };
+        if ui.add_enabled_ui(!busy, |ui| theme::button(ui, ButtonKind::Tonal, Some(ICON_AUTO_FIX_HIGH), label)).inner
+            .on_hover_text("Reads the dimension numbers printed on the plan (mm, cm, m or feet and inches) and works out the scale from them.")
+            .clicked()
+        {
+            edits.push(WallEdit::AutoScale);
+        }
+        if let Some(why) = &self.autoscale_error {
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(why).text_style(egui::TextStyle::Body).color(r.error));
+        }
+    }
+
+    /// Read the plan's dimensions in the background.
+    fn start_autoscale(&mut self) {
+        let Some(project) = self.project.as_ref() else { return };
+        let bytes = project.floor().image.clone();
+        self.autoscale_error = None;
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = image::load_from_memory(&bytes).map_err(|e| format!("Could not open the plan picture: {e}")).and_then(|img| {
+                let rgb = img.into_rgb8();
+                crate::autoscale::detect(rgb.as_raw(), rgb.dimensions())
+            });
+            let _ = tx.send(result);
+        });
+        self.autoscale_rx = Some(rx);
+    }
+
+    /// Collect the result, and ask before using it.
+    fn autoscale_tick(&mut self, ctx: &egui::Context) {
+        if let Some(rx) = &self.autoscale_rx {
+            match rx.try_recv() {
+                Ok(Ok(found)) => {
+                    self.autoscale_found = Some(found);
+                    self.autoscale_rx = None;
+                }
+                Ok(Err(why)) => {
+                    self.autoscale_error = Some(why);
+                    self.autoscale_rx = None;
+                }
+                Err(mpsc::TryRecvError::Empty) => ctx.request_repaint_after(Duration::from_millis(150)),
+                Err(mpsc::TryRecvError::Disconnected) => self.autoscale_rx = None,
+            }
+        }
+        let Some(found) = self.autoscale_found.clone() else { return };
+        let Some(floor) = self.project.as_ref().map(|p| p.floor()) else { return };
+        let (w, h) = (floor.width_px as f32 * found.metres_per_px, floor.height_px as f32 * found.metres_per_px);
+        let was = floor.metres_per_px;
+        let (mut use_it, mut close) = (false, false);
+        theme::dialog(ctx, "Scale found", 420.0, |ui| {
+            ui.label(format!("{:.1} px per metre, which makes the plan {w:.1} x {h:.1} m.", 1.0 / found.metres_per_px));
+            ui.add_space(4.0);
+            ui.weak(format!(
+                "{} dimensions on the plan agree, for example {}.{}",
+                found.agreeing,
+                found.examples.join(", "),
+                found.assumed.map_or(String::new(), |u| format!(" Numbers without a unit were read as {u}."))
+            ));
+            if let Some(m) = was {
+                ui.add_space(4.0);
+                ui.weak(format!("This replaces the current scale ({:.1} px per metre).", 1.0 / m));
+            }
+            theme::actions(ui, |ui| {
+                if theme::button(ui, ButtonKind::Filled, None, "Use this scale").clicked() {
+                    use_it = true;
+                }
+                if theme::button(ui, ButtonKind::Text, None, "Cancel").clicked() {
+                    close = true;
+                }
+            });
+        });
+        if use_it {
+            if let Some(p) = self.project.as_mut() {
+                p.floor_mut().metres_per_px = Some(found.metres_per_px);
+            }
+            self.status = "Scale set from the plan's dimensions.".into();
+            self.heat_dirty = true;
+            self.pred_dirty = true;
+            self.autosave();
+        }
+        if use_it || close {
+            self.autoscale_found = None;
         }
     }
 
@@ -2986,6 +3090,7 @@ impl FloorTab {
         for edit in ap_edits {
             self.apply_ap_edit(edit);
         }
+        self.autoscale_tick(ui.ctx());
         self.layers_button(ui.ctx(), rect);
         self.select_button(ui.ctx(), rect);
         if self.mode == WorkMode::Plan {

@@ -68,3 +68,5 @@ Third-party libraries, fonts and data files keep their own licences, listed in
 `python3 -I packaging/third-party-licenses.py > THIRD-PARTY-LICENSES.txt`.
 The optional IBM Carbon look uses IBM Plex Sans (SIL OFL 1.1) and IBM Carbon icons (Apache 2.0,
 recoloured and rasterised); their licence texts are in that file and in `packaging/licenses/`.
+Reading dimensions off a plan uses the Ocrs engine and its two pre-trained models (CC BY-SA 4.0, trained on
+HierText by Google Research), listed in the same file.

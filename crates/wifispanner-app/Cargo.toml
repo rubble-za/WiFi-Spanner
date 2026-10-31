@@ -28,3 +28,5 @@ winit = { version = "0.30.13", default-features = false, features = ["rwh_06"] }
 wayland-client = "0.31"
 wayland-backend = { version = "0.3", features = ["client_system"] }
 wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
+ocrs = "0.13"
+rten = "0.26"

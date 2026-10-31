@@ -55,5 +55,8 @@ Bundled fonts and icons (details and full licence texts in THIRD-PARTY-LICENSES.
   SIL Open Font License 1.1, used unmodified.
 - IBM Carbon icons, Copyright IBM Corp., Apache License 2.0. They were changed: each
   icon was rasterised to a 96 x 96 pixel image and recoloured white.
+- Ocrs text-reading models (text-detection.rten, text-recognition.rten), trained on the
+  HierText dataset by Google Research, Creative Commons Attribution-ShareAlike 4.0, used
+  unmodified. Ocrs models: https://github.com/robertknight/ocrs-models
 "IBM", "Carbon" and "Plex" are used only to name these works; WiFi Spanner is not
 affiliated with or endorsed by IBM.

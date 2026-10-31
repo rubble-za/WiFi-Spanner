@@ -72,6 +72,13 @@ out += bundled(
     "in that repository. CHANGES: each icon was rasterised to a 96 x 96 pixel image and recoloured white\n"
     "on a transparent background; the original SVG files are kept unmodified alongside them.",
     "Carbon-Icons-Apache-2.0.txt")
+out += bundled(
+    "Ocrs text-reading models (crates/wifispanner-app/assets/ocr: text-detection.rten, text-recognition.rten)",
+    "Ocrs models (https://github.com/robertknight/ocrs-models), trained on the HierText dataset by Google\n"
+    "Research. Licensed under CC BY-SA 4.0. The two model files are used unmodified (only renamed); the\n"
+    "licence covers them as data files, not the program. Its text follows as published at\n"
+    "https://creativecommons.org/licenses/by-sa/4.0/legalcode.txt.",
+    "CC-BY-SA-4.0.txt")
 if no_text:
     out += ["=" * 78, "Libraries whose licence is stated in their metadata but that ship no separate",
             "licence file (the named licence applies):"]
