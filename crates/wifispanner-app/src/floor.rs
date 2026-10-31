@@ -1900,6 +1900,11 @@ impl FloorTab {
             self.heat_dirty = true;
             self.pred_dirty = true;
             self.autosave();
+            // A plan with no walls yet goes straight on to looking for them; the result is still
+            // only a proposal to accept or cancel, and the wall tools work as before.
+            if self.project.as_ref().is_some_and(|p| p.floor().walls.is_empty()) {
+                self.start_wallscan();
+            }
         }
         if use_it || close {
             self.autoscale_found = None;
