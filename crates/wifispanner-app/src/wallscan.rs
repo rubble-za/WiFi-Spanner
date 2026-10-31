@@ -20,14 +20,6 @@ const WALL_LONG_M: f32 = 0.2;
 /// A gap this wide (metres) between two walls on one line may be a door or a window.
 const GAP_MIN_M: f32 = 0.5;
 const GAP_MAX_M: f32 = 2.8;
-/// Sliding doors can be wider.
-const SLIDING_MAX_M: f32 = 4.5;
-/// Outlined (hollow) walls: lines this far apart (metres) with clear paper between, at least this long.
-const HOLLOW_MIN_M: f32 = 0.10;
-const HOLLOW_MAX_M: f32 = 0.30;
-const HOLLOW_LONG_M: f32 = 2.0;
-/// Walls without a roof, such as an enclosed yard, are drawn as outlines: brick, this tall.
-const YARD_WALL_HEIGHT_M: f32 = 2.0;
 /// Pixels darker than this (0-255) are wall; darker than `LINE` are any drawn line.
 const WALL_DARK: u32 = 110;
 const LINE_DARK: u32 = 200;
@@ -193,8 +185,6 @@ fn join_ends(m: &Masks, bands: &mut [Band], max_px: usize) {
 enum Gap {
     Window,
     Door,
-    /// A sliding door: floor-to-ceiling glass.
-    Sliding,
     Opening,
 }
 
@@ -242,122 +232,11 @@ fn classify(m: &Masks, y: f32, x0: f32, x1: f32, thick: f32) -> Gap {
             }
         }
     }
-    // A sliding door: a zigzag drawn along the gap.
-    if len < 3.0 / 0.0151 && is_zigzag(m, y, xa, xb, thick) {
-        return Gap::Sliding;
-    }
     // A window: lines running along the whole gap, within the wall's thickness.
     if lines >= 2 {
         return Gap::Window;
     }
     Gap::Opening
-}
-
-/// A zigzag of lines along `xa..xb` near the wall line `y`: ink in nearly every column, not along
-/// a few straight rows, and rising and falling at least three times.
-fn is_zigzag(m: &Masks, y: f32, xa: isize, xb: isize, thick: f32) -> bool {
-    let reach = (thick * 1.6).ceil() as isize + 4;
-    let line = |x: isize, yy: isize| x >= 0 && yy >= 0 && (x as usize) < m.w && (yy as usize) < m.h && m.line[yy as usize * m.w + x as usize];
-    let len = (xb - xa).max(1) as f32;
-    // Straight lines across the gap (a window) are not a zigzag.
-    let straight = (-reach..=reach).any(|dy| ((xa..xb).filter(|&x| line(x, y as isize + dy)).count() as f32) >= len * 0.8);
-    if straight {
-        return false;
-    }
-    let mut profile: Vec<f32> = Vec::new();
-    for x in xa..xb {
-        let ys: Vec<isize> = (-reach..=reach).filter(|&dy| line(x, y as isize + dy)).collect();
-        if let (Some(lo), Some(hi)) = (ys.first(), ys.last()) {
-            profile.push((lo + hi) as f32 / 2.0);
-        }
-    }
-    let (lo, hi) = profile.iter().fold((f32::MAX, f32::MIN), |(l, h), v| (l.min(*v), h.max(*v)));
-    if (profile.len() as f32) < len * 0.9 || profile.len() < 12 || hi - lo < thick * 0.8 {
-        return false;
-    }
-    // A zigzag is one connected stroke: no jumps between columns, as between dashed lines.
-    if profile.windows(2).any(|w| (w[1] - w[0]).abs() > 6.0) {
-        return false;
-    }
-    // Count turns of at least 4 pixels.
-    let (mut turns, mut last, mut dir) = (0, profile[0], 0i32);
-    for &v in &profile[1..] {
-        if (v - last).abs() >= 4.0 {
-            let d = if v > last { 1 } else { -1 };
-            if dir != 0 && d != dir {
-                turns += 1;
-            }
-            dir = d;
-            last = v;
-        }
-    }
-    turns >= 3
-}
-
-/// Outlined walls: pairs of long thin lines a wall's thickness apart with clear paper between
-/// them, as an enclosed yard is drawn. Returns the middle lines of the pairs.
-fn hollow_bands(m: &Masks, dmin: usize, dmax: usize, long_px: usize, max_px: usize) -> Vec<Band> {
-    let lum_clear = |x: usize, y: usize| !m.line[y * m.w + x];
-    // Thin lines: long runs of ink, one to three rows thick.
-    let mut lines: Vec<(usize, usize, usize)> = Vec::new();
-    for y in 1..m.h.saturating_sub(1) {
-        let mut x = 0;
-        while x < m.w {
-            if !m.line[y * m.w + x] {
-                x += 1;
-                continue;
-            }
-            let start = x;
-            while x < m.w && m.line[y * m.w + x] {
-                x += 1;
-            }
-            if x - start < long_px {
-                continue;
-            }
-            let mid = (start + x) / 2;
-            let (mut up, mut down) = (0, 0);
-            while up < 5 && y >= up && m.line[(y - up) * m.w + mid] {
-                up += 1;
-            }
-            while down < 5 && y + down + 1 < m.h && m.line[(y + 1 + down) * m.w + mid] {
-                down += 1;
-            }
-            // Only the first row of a line, and only if the line is thin.
-            if up == 1 && down <= 2 {
-                lines.push((y + down / 2, start, x));
-            }
-        }
-    }
-    lines.sort();
-    let mut bands = Vec::new();
-    for (i, &(ya, xa0, xa1)) in lines.iter().enumerate() {
-        for &(yb, xb0, xb1) in lines[i + 1..].iter().take_while(|l| l.0 <= ya + dmax) {
-            if yb < ya + dmin {
-                continue;
-            }
-            let (x0, x1) = (xa0.max(xb0), xa1.min(xb1));
-            if x1 <= x0 + long_px {
-                continue;
-            }
-            // Clear paper in the middle, and not just the edges of a solid wall.
-            let ymid = (ya + yb) / 2;
-            let clear = (x0..x1).filter(|&x| lum_clear(x, ymid) && !m.wall[ymid * m.w + x]).count();
-            if clear * 10 < (x1 - x0) * 8 || yb - ya > max_px {
-                continue;
-            }
-            bands.push(Band { y: ymid as f32 + 0.5, x0: x0 as f32, x1: x1 as f32, thick: (yb - ya) as f32 });
-        }
-    }
-    // The lines of one wall pair up more than one way (and a third line pairs with both); keep the longest.
-    bands.sort_by(|p, q| (q.x1 - q.x0).total_cmp(&(p.x1 - p.x0)));
-    let mut kept: Vec<Band> = Vec::new();
-    for b in bands {
-        let same = kept.iter().any(|k| (k.y - b.y).abs() < dmax as f32 && k.x0.max(b.x0) < k.x1.min(b.x1) - (b.x1 - b.x0) * 0.5);
-        if !same {
-            kept.push(b);
-        }
-    }
-    kept
 }
 
 /// How far (pixels) from `x` going `dir` along row `y` the next solid wall begins, within `max`.
@@ -402,7 +281,6 @@ pub fn scan(rgb: &[u8], size: (u32, u32), metres_per_px: f32) -> Found {
     let turned_masks = masks.transposed();
     let mut walls = Vec::new();
     let (mut doors, mut windows) = (0, 0);
-    let mut outlined: Vec<Wall> = Vec::new();
     for vertical in [false, true] {
         let (m, other) = if vertical { (&turned_masks, &masks) } else { (&masks, &turned_masks) };
         let anchor_px = (px(0.12).round() as usize).max(min_px);
@@ -415,12 +293,9 @@ pub fn scan(rgb: &[u8], size: (u32, u32), metres_per_px: f32) -> Found {
         for b in &bands {
             walls.push(Wall::new(point(b.x0, b.y), point(b.x1, b.y), Material::Concrete));
         }
-        // Outlined walls (an enclosed yard, drawn without a roof): brick, 2 m tall.
-        let hollow = hollow_bands(m, (px(HOLLOW_MIN_M).round() as usize).max(4), px(HOLLOW_MAX_M).round() as usize, px(HOLLOW_LONG_M).round() as usize, max_px);
-        outlined.extend(hollow.iter().map(|b| Wall { height_m: Some(YARD_WALL_HEIGHT_M), ..Wall::new(point(b.x0, b.y), point(b.x1, b.y), Material::Brick) }));
         // Gaps along the line of each wall: from a free end to the next solid wall (a pillar will do).
         let mut seen = std::collections::HashSet::new();
-        let max_gap = px(SLIDING_MAX_M);
+        let max_gap = px(GAP_MAX_M);
         for b in &anchors {
             for (end, dir) in [(b.x1, 1.0f32), (b.x0, -1.0)] {
                 // The wall carries on past this end if thick dark stands there: not a thin line across it (a door frame).
@@ -432,17 +307,11 @@ pub fn scan(rgb: &[u8], size: (u32, u32), metres_per_px: f32) -> Found {
                 }
                 let Some(reach) = next_solid(m, end, b.y, dir, max_gap + 6.0, min_px, max_px) else { continue };
                 let (lo, hi) = if dir > 0.0 { (end, end + dir * reach) } else { (end + dir * reach, end) };
-                if !(GAP_MIN_M..=SLIDING_MAX_M).contains(&((hi - lo) * metres_per_px)) || !seen.insert(((b.y / 6.0) as i32, (lo / 6.0) as i32, (hi / 6.0) as i32)) {
+                if !(GAP_MIN_M..=GAP_MAX_M).contains(&((hi - lo) * metres_per_px)) || !seen.insert(((b.y / 6.0) as i32, (lo / 6.0) as i32, (hi / 6.0) as i32)) {
                     continue;
                 }
-                let wide = (hi - lo) * metres_per_px > GAP_MAX_M;
                 let kind = classify(m, b.y, lo, hi, b.thick);
                 let material = match kind {
-                    Gap::Door | Gap::Window if wide => continue,
-                    Gap::Sliding => {
-                        windows += 1;
-                        Material::Glass
-                    }
                     Gap::Door => {
                         doors += 1;
                         Material::Wood
@@ -487,42 +356,6 @@ pub fn scan(rgb: &[u8], size: (u32, u32), metres_per_px: f32) -> Found {
             }
         }
     }
-    // Outlined walls only count where they form a yard: each end meets a solid wall or another outlined wall.
-    let reach = 0.35 / metres_per_px;
-    let meets = |p: [f32; 2], own: usize| {
-        walls.iter().any(|w| {
-            let c = w.closest_point(p);
-            (c[0] - p[0]).hypot(c[1] - p[1]) <= reach
-        }) || outlined.iter().enumerate().any(|(i, w)| {
-            i != own && {
-                let c = w.closest_point(p);
-                (c[0] - p[0]).hypot(c[1] - p[1]) <= reach
-            }
-        })
-    };
-    let kept: Vec<Wall> = outlined.iter().enumerate().filter(|(i, w)| meets(w.a, *i) && meets(w.b, *i)).map(|(_, w)| *w).collect();
-    // A door in an outlined wall: a gap between two pieces on one line with a swing arc.
-    let thick = px(0.2);
-    for vertical in [false, true] {
-        let (mask, ax, cross): (&Masks, usize, usize) = if vertical { (&turned_masks, 1, 0) } else { (&masks, 0, 1) };
-        let mut pieces: Vec<(f32, f32, f32)> = kept
-            .iter()
-            .filter(|w| (w.a[cross] - w.b[cross]).abs() < 2.0)
-            .map(|w| (w.a[cross], w.a[ax].min(w.b[ax]), w.a[ax].max(w.b[ax])))
-            .collect();
-        pieces.sort_by(|p, q| p.0.total_cmp(&q.0).then(p.1.total_cmp(&q.1)));
-        for (i, p) in pieces.iter().enumerate() {
-            for q in pieces[i + 1..].iter().take_while(|q| (q.0 - p.0).abs() <= 4.0) {
-                let gap_m = (q.1 - p.2) * metres_per_px;
-                if (GAP_MIN_M..=GAP_MAX_M).contains(&gap_m) && classify(mask, p.0, p.2, q.1, thick) == Gap::Door {
-                    doors += 1;
-                    let (a, b) = if vertical { ([p.0, p.2], [p.0, q.1]) } else { ([p.2, p.0], [q.1, p.0]) };
-                    walls.push(Wall::new(a, b, Material::Wood));
-                }
-            }
-        }
-    }
-    walls.extend(kept);
     Found { walls, doors, windows }
 }
 
@@ -614,8 +447,8 @@ mod tests {
         for w in &found.walls {
             let colour = match w.material {
                 Material::Wood => image::Rgb([0, 170, 0]),
-                Material::Brick => image::Rgb([255, 140, 0]),
-                Material::Glass => image::Rgb([160, 0, 200]),
+
+
                 Material::Window => image::Rgb([0, 90, 255]),
                 _ => image::Rgb([230, 30, 30]),
             };
