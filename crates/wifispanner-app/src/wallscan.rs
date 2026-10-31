@@ -16,10 +16,18 @@ use wifispanner_core::Material;
 const WALL_MIN_M: f32 = 0.08;
 const WALL_MAX_M: f32 = 0.6;
 /// A wall is at least this long, in metres.
-const WALL_LONG_M: f32 = 0.3;
+const WALL_LONG_M: f32 = 0.2;
 /// A gap this wide (metres) between two walls on one line may be a door or a window.
 const GAP_MIN_M: f32 = 0.5;
 const GAP_MAX_M: f32 = 2.8;
+/// Sliding doors can be wider.
+const SLIDING_MAX_M: f32 = 4.5;
+/// Outlined (hollow) walls: lines this far apart (metres) with clear paper between, at least this long.
+const HOLLOW_MIN_M: f32 = 0.10;
+const HOLLOW_MAX_M: f32 = 0.30;
+const HOLLOW_LONG_M: f32 = 2.0;
+/// Walls without a roof, such as an enclosed yard, are drawn as outlines: brick, this tall.
+const YARD_WALL_HEIGHT_M: f32 = 2.0;
 /// Pixels darker than this (0-255) are wall; darker than `LINE` are any drawn line.
 const WALL_DARK: u32 = 110;
 const LINE_DARK: u32 = 200;
@@ -184,6 +192,8 @@ fn join_ends(m: &Masks, bands: &mut [Band], max_px: usize) {
 enum Gap {
     Window,
     Door,
+    /// A sliding door: floor-to-ceiling glass.
+    Sliding,
     Opening,
 }
 
@@ -194,25 +204,34 @@ fn classify(m: &Masks, y: f32, x0: f32, x1: f32, thick: f32) -> Gap {
     let line = |x: isize, yy: isize| x >= 0 && yy >= 0 && (x as usize) < m.w && (yy as usize) < m.h && m.line[yy as usize * m.w + x as usize];
     let near = |x: f32, yy: f32| (-1isize..=1).any(|dx| (-1isize..=1).any(|dy| line(x as isize + dx, yy as isize + dy)));
     let half = (thick / 2.0).ceil() as isize + 2;
-    // A door: a quarter circle as wide as the gap, swung from either end to either side of the wall.
+    // A door: a quarter circle swung from either end to either side of the wall, and the leaf
+    // drawn along its open position from the hinge.
     let gap = x1 - x0;
     for hinge_left in [true, false] {
         for side in [-1.0f32, 1.0] {
-            for scale in [1.0f32, 0.92, 0.84] {
+            for scale in [1.0f32, 0.92, 0.84, 0.76, 0.68] {
                 let r = gap * scale;
                 let hinge = if hinge_left { x0 } else { x1 };
                 let dir = if hinge_left { 1.0 } else { -1.0 };
-                let hits = (1..=8)
+                let arc = (1..=8)
                     .filter(|i| {
                         let a = (*i as f32 * 10.0 + 5.0).to_radians();
                         near(hinge + dir * r * a.cos(), y + side * (thick / 2.0 + r * a.sin()))
                     })
                     .count();
-                if hits >= 6 {
+                if arc < 7 {
+                    continue;
+                }
+                let leaf = (1..=8).filter(|i| near(hinge, y + side * (thick / 2.0 + r * (0.2 + 0.1 * *i as f32)))).count();
+                if leaf >= 6 {
                     return Gap::Door;
                 }
             }
         }
+    }
+    // A sliding door: a zigzag drawn along the gap.
+    if len < 3.0 / 0.0151 && is_zigzag(m, y, xa, xb, thick) {
+        return Gap::Sliding;
     }
     // A window: lines running along the whole gap, within the wall's thickness.
     let (mut lines, mut prev) = (0, false);
@@ -227,6 +246,104 @@ fn classify(m: &Masks, y: f32, x0: f32, x1: f32, thick: f32) -> Gap {
         return Gap::Window;
     }
     Gap::Opening
+}
+
+/// A zigzag of lines along `xa..xb` near the wall line `y`: ink in nearly every column, not along
+/// a few straight rows, and rising and falling at least three times.
+fn is_zigzag(m: &Masks, y: f32, xa: isize, xb: isize, thick: f32) -> bool {
+    let reach = (thick * 1.6).ceil() as isize + 4;
+    let line = |x: isize, yy: isize| x >= 0 && yy >= 0 && (x as usize) < m.w && (yy as usize) < m.h && m.line[yy as usize * m.w + x as usize];
+    let len = (xb - xa).max(1) as f32;
+    // Straight lines across the gap (a window) are not a zigzag.
+    let straight = (-reach..=reach).any(|dy| ((xa..xb).filter(|&x| line(x, y as isize + dy)).count() as f32) >= len * 0.8);
+    if straight {
+        return false;
+    }
+    let mut profile: Vec<f32> = Vec::new();
+    for x in xa..xb {
+        let ys: Vec<isize> = (-reach..=reach).filter(|&dy| line(x, y as isize + dy)).collect();
+        if let (Some(lo), Some(hi)) = (ys.first(), ys.last()) {
+            profile.push((lo + hi) as f32 / 2.0);
+        }
+    }
+    let (lo, hi) = profile.iter().fold((f32::MAX, f32::MIN), |(l, h), v| (l.min(*v), h.max(*v)));
+    if (profile.len() as f32) < len * 0.9 || profile.len() < 12 || hi - lo < thick * 0.8 {
+        return false;
+    }
+    // A zigzag is one connected stroke: no jumps between columns, as between dashed lines.
+    if profile.windows(2).any(|w| (w[1] - w[0]).abs() > 6.0) {
+        return false;
+    }
+    // Count turns of at least 4 pixels.
+    let (mut turns, mut last, mut dir) = (0, profile[0], 0i32);
+    for &v in &profile[1..] {
+        if (v - last).abs() >= 4.0 {
+            let d = if v > last { 1 } else { -1 };
+            if dir != 0 && d != dir {
+                turns += 1;
+            }
+            dir = d;
+            last = v;
+        }
+    }
+    turns >= 3
+}
+
+/// Outlined walls: pairs of long thin lines a wall's thickness apart with clear paper between
+/// them, as an enclosed yard is drawn. Returns the middle lines of the pairs.
+fn hollow_bands(m: &Masks, dmin: usize, dmax: usize, long_px: usize, max_px: usize) -> Vec<Band> {
+    let lum_clear = |x: usize, y: usize| !m.line[y * m.w + x];
+    // Thin lines: long runs of ink, one to three rows thick.
+    let mut lines: Vec<(usize, usize, usize)> = Vec::new();
+    for y in 1..m.h.saturating_sub(1) {
+        let mut x = 0;
+        while x < m.w {
+            if !m.line[y * m.w + x] {
+                x += 1;
+                continue;
+            }
+            let start = x;
+            while x < m.w && m.line[y * m.w + x] {
+                x += 1;
+            }
+            if x - start < long_px {
+                continue;
+            }
+            let mid = (start + x) / 2;
+            let (mut up, mut down) = (0, 0);
+            while up < 5 && y >= up && m.line[(y - up) * m.w + mid] {
+                up += 1;
+            }
+            while down < 5 && y + down + 1 < m.h && m.line[(y + 1 + down) * m.w + mid] {
+                down += 1;
+            }
+            // Only the first row of a line, and only if the line is thin.
+            if up == 1 && down <= 2 {
+                lines.push((y + down / 2, start, x));
+            }
+        }
+    }
+    lines.sort();
+    let mut bands = Vec::new();
+    for (i, &(ya, xa0, xa1)) in lines.iter().enumerate() {
+        for &(yb, xb0, xb1) in lines[i + 1..].iter().take_while(|l| l.0 <= ya + dmax) {
+            if yb < ya + dmin {
+                continue;
+            }
+            let (x0, x1) = (xa0.max(xb0), xa1.min(xb1));
+            if x1 <= x0 + long_px {
+                continue;
+            }
+            // Clear paper in the middle, and not just the edges of a solid wall.
+            let ymid = (ya + yb) / 2;
+            let clear = (x0..x1).filter(|&x| lum_clear(x, ymid) && !m.wall[ymid * m.w + x]).count();
+            if clear * 10 < (x1 - x0) * 8 || yb - ya > max_px {
+                continue;
+            }
+            bands.push(Band { y: ymid as f32 + 0.5, x0: x0 as f32, x1: x1 as f32, thick: (yb - ya) as f32 });
+        }
+    }
+    bands
 }
 
 /// How far (pixels) from `x` going `dir` along row `y` the next solid wall begins, within `max`.
@@ -270,6 +387,7 @@ pub fn scan(rgb: &[u8], size: (u32, u32), metres_per_px: f32) -> Found {
     let masks = Masks::new(rgb, size);
     let mut walls = Vec::new();
     let (mut doors, mut windows) = (0, 0);
+    let mut outlined: Vec<Wall> = Vec::new();
     for vertical in [false, true] {
         let turned;
         let m = if vertical {
@@ -278,16 +396,23 @@ pub fn scan(rgb: &[u8], size: (u32, u32), metres_per_px: f32) -> Found {
         } else {
             &masks
         };
-        let mut bands = horizontal_bands(m, min_px, max_px, long_px);
+        let anchor_px = (px(0.12).round() as usize).max(min_px);
+        let mut bands = horizontal_bands(m, min_px, max_px, anchor_px);
         join_ends(m, &mut bands, max_px);
         // Back to picture coordinates.
         let point = |x: f32, y: f32| if vertical { [y, x] } else { [x, y] };
         for b in &bands {
-            walls.push(Wall::new(point(b.x0, b.y), point(b.x1, b.y), Material::Concrete));
+            // Short stubs (pillars, door frames) only anchor the gaps beside them.
+            if b.x1 - b.x0 >= long_px as f32 {
+                walls.push(Wall::new(point(b.x0, b.y), point(b.x1, b.y), Material::Concrete));
+            }
         }
+        // Outlined walls (an enclosed yard, drawn without a roof): brick, 2 m tall.
+        let hollow = hollow_bands(m, (px(HOLLOW_MIN_M).round() as usize).max(4), px(HOLLOW_MAX_M).round() as usize, px(HOLLOW_LONG_M).round() as usize, max_px);
+        outlined.extend(hollow.iter().map(|b| Wall { height_m: Some(YARD_WALL_HEIGHT_M), ..Wall::new(point(b.x0, b.y), point(b.x1, b.y), Material::Brick) }));
         // Gaps along the line of each wall: from a free end to the next solid wall (a pillar will do).
         let mut seen = std::collections::HashSet::new();
-        let max_gap = px(GAP_MAX_M);
+        let max_gap = px(SLIDING_MAX_M);
         for b in &bands {
             for (end, dir) in [(b.x1, 1.0f32), (b.x0, -1.0)] {
                 let free = !m.solid_at((end + dir * 2.0) as isize, b.y as isize, 3, max_px + 40);
@@ -296,11 +421,17 @@ pub fn scan(rgb: &[u8], size: (u32, u32), metres_per_px: f32) -> Found {
                 }
                 let Some(reach) = next_solid(m, end, b.y, dir, max_gap + 6.0, min_px, max_px) else { continue };
                 let (lo, hi) = if dir > 0.0 { (end, end + dir * reach) } else { (end + dir * reach, end) };
-                if !(GAP_MIN_M..=GAP_MAX_M).contains(&((hi - lo) * metres_per_px)) || !seen.insert(((b.y / 6.0) as i32, (lo / 6.0) as i32, (hi / 6.0) as i32)) {
+                if !(GAP_MIN_M..=SLIDING_MAX_M).contains(&((hi - lo) * metres_per_px)) || !seen.insert(((b.y / 6.0) as i32, (lo / 6.0) as i32, (hi / 6.0) as i32)) {
                     continue;
                 }
+                let wide = (hi - lo) * metres_per_px > GAP_MAX_M;
                 let kind = classify(m, b.y, lo, hi, b.thick);
                 let material = match kind {
+                    Gap::Door | Gap::Window if wide => continue,
+                    Gap::Sliding => {
+                        windows += 1;
+                        Material::Glass
+                    }
                     Gap::Door => {
                         doors += 1;
                         Material::Wood
@@ -315,6 +446,21 @@ pub fn scan(rgb: &[u8], size: (u32, u32), metres_per_px: f32) -> Found {
             }
         }
     }
+    // Outlined walls only count where they form a yard: each end meets a solid wall or another outlined wall.
+    let reach = 0.35 / metres_per_px;
+    let meets = |p: [f32; 2], own: usize| {
+        walls.iter().any(|w| {
+            let c = w.closest_point(p);
+            (c[0] - p[0]).hypot(c[1] - p[1]) <= reach
+        }) || outlined.iter().enumerate().any(|(i, w)| {
+            i != own && {
+                let c = w.closest_point(p);
+                (c[0] - p[0]).hypot(c[1] - p[1]) <= reach
+            }
+        })
+    };
+    let kept: Vec<Wall> = outlined.iter().enumerate().filter(|(i, w)| meets(w.a, *i) && meets(w.b, *i)).map(|(_, w)| *w).collect();
+    walls.extend(kept);
     Found { walls, doors, windows }
 }
 
@@ -398,7 +544,7 @@ mod tests {
         if let Ok(v) = std::env::var("WS_NEAR") {
             let n: Vec<f32> = v.split(',').filter_map(|s| s.parse().ok()).collect();
             for w in &found.walls {
-                if (w.a[1] - n[1]).abs() < 30.0 && (w.b[0] > n[0] - 200.0) && w.a[0] < n[0] + 400.0 {
+                if (w.a[0] - n[0]).abs() < 30.0 && (w.a[1] - n[1]).abs() < 400.0 {
                     println!("{w:?}");
                 }
             }
@@ -406,6 +552,8 @@ mod tests {
         for w in &found.walls {
             let colour = match w.material {
                 Material::Wood => image::Rgb([0, 170, 0]),
+                Material::Brick => image::Rgb([255, 140, 0]),
+                Material::Glass => image::Rgb([160, 0, 200]),
                 Material::Window => image::Rgb([0, 90, 255]),
                 _ => image::Rgb([230, 30, 30]),
             };
