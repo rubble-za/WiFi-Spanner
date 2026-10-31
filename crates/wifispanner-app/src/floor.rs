@@ -2909,6 +2909,13 @@ impl FloorTab {
         if panning {
             self.offset += resp.drag_delta();
         }
+        // Two fingers pan (and, through the zoom factor below, pinch to zoom) with any tool, like
+        // drawing apps; the first finger's own drag, such as a selection box, is dropped.
+        if let Some(touch) = ui.input(|i| i.multi_touch()) {
+            self.offset += touch.translation_delta;
+            self.box_start = None;
+            self.ap_box_start = None;
+        }
         if self.tool == Tool::Align
             && resp.dragged_by(egui::PointerButton::Primary)
             && let (Some((o, _)), Some(p)) = (&overlay_tex, self.project.as_mut())

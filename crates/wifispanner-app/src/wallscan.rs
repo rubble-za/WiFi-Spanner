@@ -52,6 +52,18 @@ impl Masks {
         Masks { w: self.h, h: self.w, wall: t(&self.wall), line: t(&self.line) }
     }
 
+    /// Dark at `(x, y)` and part of a vertical stack of dark pixels of wall thickness: not a thin line.
+    fn solid_at(&self, x: isize, y: isize, min_px: usize, max_px: usize) -> bool {
+        let (mut up, mut down) = (0isize, 0isize);
+        while up <= max_px as isize + 1 && self.wall_at(x, y - up) {
+            up += 1;
+        }
+        while down <= max_px as isize + 1 && self.wall_at(x, y + 1 + down) {
+            down += 1;
+        }
+        self.wall_at(x, y) && (min_px as isize..=max_px as isize).contains(&(up + down))
+    }
+
     fn wall_at(&self, x: isize, y: isize) -> bool {
         x >= 0 && y >= 0 && (x as usize) < self.w && (y as usize) < self.h && self.wall[y as usize * self.w + x as usize]
     }
@@ -141,15 +153,27 @@ fn horizontal_bands(m: &Masks, min_px: usize, max_px: usize, long_px: usize) -> 
     bands
 }
 
+/// A dark pixel that is part of a thin line (under three pixels across), not of a wall.
+fn thin(m: &Masks, x: isize, y: isize, max_px: usize) -> bool {
+    let (mut up, mut down) = (0isize, 0isize);
+    while up <= max_px as isize + 1 && m.wall_at(x, y - up) {
+        up += 1;
+    }
+    while down <= max_px as isize + 1 && m.wall_at(x, y + 1 + down) {
+        down += 1;
+    }
+    up + down < 3
+}
+
 /// Extend a band's ends to the middle of any wall it runs into.
-fn join_ends(m: &Masks, bands: &mut [Band]) {
+fn join_ends(m: &Masks, bands: &mut [Band], max_px: usize) {
     for b in bands {
         let y = b.y as isize;
         let reach = (b.thick / 2.0) as isize;
-        if m.wall_at(b.x1 as isize + 1, y) || m.wall_at(b.x1 as isize + 2, y) {
+        if (1..=2).any(|d| m.wall_at(b.x1 as isize + d, y) && !thin(m, b.x1 as isize + d, y, max_px)) {
             b.x1 += reach as f32;
         }
-        if m.wall_at(b.x0 as isize - 2, y) || m.wall_at(b.x0 as isize - 1, y) {
+        if (1..=2).any(|d| m.wall_at(b.x0 as isize - d, y) && !thin(m, b.x0 as isize - d, y, max_px)) {
             b.x0 -= reach as f32;
         }
     }
@@ -168,12 +192,30 @@ fn classify(m: &Masks, y: f32, x0: f32, x1: f32, thick: f32) -> Gap {
     let (xa, xb) = (x0.ceil() as isize + 2, x1.floor() as isize - 2);
     let len = (xb - xa).max(1) as f32;
     let line = |x: isize, yy: isize| x >= 0 && yy >= 0 && (x as usize) < m.w && (yy as usize) < m.h && m.line[yy as usize * m.w + x as usize];
-    // Lines running along the gap, within the wall's thickness.
+    let near = |x: f32, yy: f32| (-1isize..=1).any(|dx| (-1isize..=1).any(|dy| line(x as isize + dx, yy as isize + dy)));
     let half = (thick / 2.0).ceil() as isize + 2;
-    let along = (-half..=half).filter(|dy| ((xa..xb).filter(|&x| line(x, y as isize + dy)).count() as f32) >= len * 0.8).count();
-    // Rows of one line can be several pixels thick; separate lines are what count.
-    let mut lines = 0;
-    let mut prev = false;
+    // A door: a quarter circle as wide as the gap, swung from either end to either side of the wall.
+    let gap = x1 - x0;
+    for hinge_left in [true, false] {
+        for side in [-1.0f32, 1.0] {
+            for scale in [1.0f32, 0.92, 0.84] {
+                let r = gap * scale;
+                let hinge = if hinge_left { x0 } else { x1 };
+                let dir = if hinge_left { 1.0 } else { -1.0 };
+                let hits = (1..=8)
+                    .filter(|i| {
+                        let a = (*i as f32 * 10.0 + 5.0).to_radians();
+                        near(hinge + dir * r * a.cos(), y + side * (thick / 2.0 + r * a.sin()))
+                    })
+                    .count();
+                if hits >= 6 {
+                    return Gap::Door;
+                }
+            }
+        }
+    }
+    // A window: lines running along the whole gap, within the wall's thickness.
+    let (mut lines, mut prev) = (0, false);
     for dy in -half..=half {
         let on = ((xa..xb).filter(|&x| line(x, y as isize + dy)).count() as f32) >= len * 0.8;
         if on && !prev {
@@ -181,19 +223,44 @@ fn classify(m: &Masks, y: f32, x0: f32, x1: f32, thick: f32) -> Gap {
         }
         prev = on;
     }
-    if lines >= 2 && along >= 2 {
+    if lines >= 2 {
         return Gap::Window;
     }
-    // A swing arc and leaf: ink in a square as wide as the gap beside the wall, on either side.
-    let reach = len as isize;
-    for side in [-1isize, 1] {
-        let start = y as isize + side * (half + 1);
-        let ink = (1..=reach).map(|d| (xa..xb).filter(|&x| line(x, start + side * d)).count()).sum::<usize>();
-        if ink as f32 >= len * 1.2 {
-            return Gap::Door;
+    Gap::Opening
+}
+
+/// How far (pixels) from `x` going `dir` along row `y` the next solid wall begins, within `max`.
+fn next_solid(m: &Masks, x: f32, y: f32, dir: f32, max: f32, min_px: usize, max_px: usize) -> Option<f32> {
+    // Solid wall ahead is either a wall of the same line seen across, or a wall that crosses this
+    // line and shows its thickness along it.
+    let solid = |xx: isize| {
+        let yy = y as isize;
+        if m.solid_at(xx, yy, min_px, max_px) {
+            return true;
+        }
+        let (mut back, mut fwd) = (0isize, 0isize);
+        while back <= max_px as isize + 1 && m.wall_at(xx - back, yy) {
+            back += 1;
+        }
+        while fwd <= max_px as isize + 1 && m.wall_at(xx + 1 + fwd, yy) {
+            fwd += 1;
+        }
+        m.wall_at(xx, yy) && (min_px as isize..=max_px as isize).contains(&(back + fwd))
+    };
+    let mut run = 0;
+    let steps = max as isize;
+    for d in 2..=steps {
+        let xx = (x + dir * d as f32) as isize;
+        if solid(xx) {
+            run += 1;
+            if run >= 3 {
+                return Some(d as f32 - 2.0);
+            }
+        } else {
+            run = 0;
         }
     }
-    Gap::Opening
+    None
 }
 
 /// Find walls, doors and windows in an RGB picture drawn at `metres_per_px`.
@@ -212,39 +279,39 @@ pub fn scan(rgb: &[u8], size: (u32, u32), metres_per_px: f32) -> Found {
             &masks
         };
         let mut bands = horizontal_bands(m, min_px, max_px, long_px);
-        join_ends(m, &mut bands);
+        join_ends(m, &mut bands, max_px);
         // Back to picture coordinates.
         let point = |x: f32, y: f32| if vertical { [y, x] } else { [x, y] };
         for b in &bands {
             walls.push(Wall::new(point(b.x0, b.y), point(b.x1, b.y), Material::Concrete));
         }
-        // Gaps between walls on one line.
-        let mut order: Vec<usize> = (0..bands.len()).collect();
-        order.sort_by(|&a, &b| bands[a].y.total_cmp(&bands[b].y).then(bands[a].x0.total_cmp(&bands[b].x0)));
-        for (i, &a) in order.iter().enumerate() {
-            let left = bands[a];
-            let next = order[i + 1..]
-                .iter()
-                .map(|&j| bands[j])
-                .filter(|r| (r.y - left.y).abs() <= left.thick.max(r.thick) / 2.0 && r.x0 >= left.x1)
-                .min_by(|p, q| p.x0.total_cmp(&q.x0));
-            let Some(right) = next else { continue };
-            let gap_m = (right.x0 - left.x1) * metres_per_px;
-            if !(GAP_MIN_M..=GAP_MAX_M).contains(&gap_m) {
-                continue;
-            }
-            let y = (left.y + right.y) / 2.0;
-            let thick = left.thick.max(right.thick);
-            match classify(m, y, left.x1, right.x0, thick) {
-                Gap::Window => {
-                    windows += 1;
-                    walls.push(Wall::new(point(left.x1, y), point(right.x0, y), Material::Window));
+        // Gaps along the line of each wall: from a free end to the next solid wall (a pillar will do).
+        let mut seen = std::collections::HashSet::new();
+        let max_gap = px(GAP_MAX_M);
+        for b in &bands {
+            for (end, dir) in [(b.x1, 1.0f32), (b.x0, -1.0)] {
+                let free = !m.solid_at((end + dir * 2.0) as isize, b.y as isize, 3, max_px + 40);
+                if !free {
+                    continue;
                 }
-                Gap::Door => {
-                    doors += 1;
-                    walls.push(Wall::new(point(left.x1, y), point(right.x0, y), Material::Wood));
+                let Some(reach) = next_solid(m, end, b.y, dir, max_gap + 6.0, min_px, max_px) else { continue };
+                let (lo, hi) = if dir > 0.0 { (end, end + dir * reach) } else { (end + dir * reach, end) };
+                if !(GAP_MIN_M..=GAP_MAX_M).contains(&((hi - lo) * metres_per_px)) || !seen.insert(((b.y / 6.0) as i32, (lo / 6.0) as i32, (hi / 6.0) as i32)) {
+                    continue;
                 }
-                Gap::Opening => {}
+                let kind = classify(m, b.y, lo, hi, b.thick);
+                let material = match kind {
+                    Gap::Door => {
+                        doors += 1;
+                        Material::Wood
+                    }
+                    Gap::Window => {
+                        windows += 1;
+                        Material::Window
+                    }
+                    Gap::Opening => continue,
+                };
+                walls.push(Wall::new(point(lo, b.y), point(hi, b.y), material));
             }
         }
     }
